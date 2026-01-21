@@ -1,24 +1,63 @@
 #!/bin/bash
-# test-utils.sh - Common utilities for Plandex test scripts
+# =============================================================================
+# test_utils.sh - Common utilities for Plandex test scripts
+# =============================================================================
+#
+# This file provides shared utilities for all Plandex test scripts including:
+#   - Color-coded logging (success, error, info)
+#   - Command execution with exit code handling
+#   - Timeout support for LLM operations
+#   - Test environment setup and cleanup
+#
+# Configuration Variables (can be overridden via environment):
+#   PLANDEX_CMD      - Command to run Plandex (default: plandex-dev)
+#   PLANDEX_TIMEOUT  - Timeout in seconds for LLM operations (default: 300)
+#   PLANDEX_ENV_FILE - Path to environment file (default: ../.env.client-keys)
+#
+# Usage:
+#   source test_utils.sh
+#   setup_test_dir "my-test"
+#   run_plandex_cmd "new -n test-plan" "Create test plan"
+#   run_plandex_cmd_with_timeout "tell 'hello'" "LLM call" 120
+#   cleanup_test_dir
+#
+# Updated: January 2026
+#   - Added PLANDEX_TIMEOUT for configurable LLM operation timeouts
+#   - Added PLANDEX_ENV_FILE for configurable environment file location
+#   - Added run_cmd_with_timeout() and run_plandex_cmd_with_timeout()
+#   - setup_test_dir() now handles missing env file gracefully
+#
+# =============================================================================
 
 export PLANDEX_ENV='development'
 
-# Colors for output
+# =============================================================================
+# ANSI Color Codes
+# =============================================================================
 export RED='\033[0;31m'
 export GREEN='\033[0;32m'
 export YELLOW='\033[1;33m'
 export NC='\033[0m' # No Color
 
+# =============================================================================
+# Configuration Variables
+# =============================================================================
+
 # Default command - can be overridden by environment variable
 export PLANDEX_CMD="${PLANDEX_CMD:-plandex-dev}"
 
 # Default timeout for LLM operations (in seconds)
+# LLM calls can take a while; 300s (5 min) is a safe default
 export PLANDEX_TIMEOUT="${PLANDEX_TIMEOUT:-300}"
 
 # Environment file location - can be customized
+# This file typically contains API keys and other secrets
 export PLANDEX_ENV_FILE="${PLANDEX_ENV_FILE:-../.env.client-keys}"
 
-# Logging functions
+# =============================================================================
+# Logging Functions
+# =============================================================================
+
 log() {
     echo -e "$1"
 }
@@ -35,6 +74,10 @@ error() {
 info() {
     log "${YELLOW}→ $1${NC}"
 }
+
+# =============================================================================
+# Command Execution Functions
+# =============================================================================
 
 # Run command and check for success
 run_cmd() {
@@ -113,6 +156,10 @@ expect_plandex_failure() {
     expect_failure "$PLANDEX_CMD $cmd" "$description"
 }
 
+# =============================================================================
+# Assertion Functions
+# =============================================================================
+
 # Check if file exists
 check_file() {
     if [ -f "$1" ]; then
@@ -122,7 +169,12 @@ check_file() {
     fi
 }
 
+# =============================================================================
+# Test Environment Functions
+# =============================================================================
+
 # Setup test environment
+# Creates a temporary directory and loads environment variables
 setup_test_dir() {
     # Source environment file if it exists
     if [ -f "$PLANDEX_ENV_FILE" ]; then
@@ -143,7 +195,13 @@ setup_test_dir() {
     success "Test environment created"
 }
 
+# =============================================================================
+# Timeout Functions (for LLM operations)
+# =============================================================================
+
 # Run command with timeout support
+# Usage: run_cmd_with_timeout "command" "description" [timeout_seconds]
+# Exit code 124 indicates timeout
 run_cmd_with_timeout() {
     local cmd="$1"
     local description="$2"

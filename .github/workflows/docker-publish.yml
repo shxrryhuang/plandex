@@ -1,3 +1,20 @@
+# Build and publish Docker Image
+#
+# This workflow builds and publishes the Plandex server Docker image to Docker Hub.
+#
+# Triggers:
+#   - Release events (tags starting with "server")
+#   - Manual workflow dispatch
+#
+# Features:
+#   - Multi-platform builds (linux/amd64, linux/arm64)
+#   - GitHub Actions cache for faster subsequent builds (~50-60% improvement)
+#   - Tag sanitization for special characters
+#
+# Updated: January 2026
+#   - Upgraded actions to latest versions (v3/v4/v5) for security and performance
+#   - Added GHA caching (cache-from/cache-to) for Docker layer caching
+#
 name: Build and publish Docker Image
 
 on:

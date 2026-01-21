@@ -1,4 +1,29 @@
+# Plandex Local Development Environment
+#
+# This docker-compose configuration provides a complete local development setup
+# with PostgreSQL database and Plandex server.
+#
+# Usage:
+#   docker compose up -d      # Start services
+#   docker compose down       # Stop services
+#   docker compose logs -f    # View logs
+#
+# Environment Variables (optional):
+#   POSTGRES_PASSWORD  - Database password (default: plandex)
+#   POSTGRES_USER      - Database user (default: plandex)
+#   POSTGRES_DB        - Database name (default: plandex)
+#
+# Updated: January 2026
+#   - Pinned PostgreSQL to version 16-alpine for stability
+#   - Added health checks for both services
+#   - Added memory resource limits
+#   - Made credentials configurable via environment variables
+#   - Server now waits for healthy postgres before starting
+#
 services:
+  # PostgreSQL Database
+  # - Pinned to v16-alpine for stability and security
+  # - Health check ensures database is ready before server connects
   plandex-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -12,12 +37,14 @@ services:
       - plandex-db:/var/lib/postgresql/data
     networks:
       - plandex-network
+    # Health check: ensures postgres is accepting connections
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plandex} -d ${POSTGRES_DB:-plandex}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    # Resource limits to prevent runaway memory usage
     deploy:
       resources:
         limits:
@@ -25,6 +52,9 @@ services:
         reservations:
           memory: 256M
 
+  # Plandex Server
+  # - Waits for postgres to be healthy before starting
+  # - Health check monitors /health endpoint
   plandex-server:
     image: plandexai/plandex-server:latest
     # build:
