@@ -385,7 +385,6 @@ func TestBufferOrStream(t *testing.T) {
 		},
 		{
 			name: "stop tag split across two chunks (prefix + rest)",
-			only: true, // helper if you want to run just this one
 			initialState: &chunkProcessor{
 				contentBuffer: "", // begins empty
 			},
