@@ -20,6 +20,14 @@ import (
 )
 
 func GetPlanConvo(orgId, planId string) ([]*ConvoMessage, error) {
+	// Validate required parameters to prevent panics from nil/empty values
+	if orgId == "" {
+		return nil, fmt.Errorf("org ID cannot be empty")
+	}
+	if planId == "" {
+		return nil, fmt.Errorf("plan ID cannot be empty")
+	}
+
 	var convo []*ConvoMessage
 	convoDir := getPlanConversationDir(orgId, planId)
 
@@ -100,6 +108,23 @@ func GetConvoMessage(orgId, planId, messageId string) (*ConvoMessage, error) {
 }
 
 func StoreConvoMessage(repo *GitRepo, message *ConvoMessage, currentUserId, branch string, commit bool) (string, error) {
+	// Validate required parameters to prevent panics
+	if message == nil {
+		return "", fmt.Errorf("cannot store nil conversation message")
+	}
+	if message.OrgId == "" {
+		return "", fmt.Errorf("org ID cannot be empty in conversation message")
+	}
+	if message.PlanId == "" {
+		return "", fmt.Errorf("plan ID cannot be empty in conversation message")
+	}
+	if branch == "" {
+		return "", fmt.Errorf("branch name cannot be empty")
+	}
+	if repo == nil {
+		return "", fmt.Errorf("git repo cannot be nil")
+	}
+
 	convoDir := getPlanConversationDir(message.OrgId, message.PlanId)
 
 	ts := time.Now().UTC()
@@ -136,8 +161,23 @@ func StoreConvoMessage(repo *GitRepo, message *ConvoMessage, currentUserId, bran
 
 	var desc string
 	if message.Role == openai.ChatMessageRoleUser {
-		desc = "💬 User prompt"
-		// TODO: add user name
+		// Fetch user name for better identification in multi-user environments
+		userName := ""
+		if currentUserId != "" {
+			user, err := GetUser(currentUserId)
+			if err == nil && user != nil {
+				if user.Name != "" {
+					userName = user.Name
+				} else if user.Email != "" {
+					userName = user.Email
+				}
+			}
+		}
+		if userName != "" {
+			desc = fmt.Sprintf("💬 User prompt (%s)", userName)
+		} else {
+			desc = "💬 User prompt"
+		}
 	} else {
 		desc = "🤖 Plandex reply"
 		if message.Stopped {

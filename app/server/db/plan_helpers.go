@@ -140,6 +140,17 @@ func AddPlanContextTokens(planId, branch string, addTokens int) error {
 }
 
 func AddPlanConvoMessage(msg *ConvoMessage, branch string) error {
+	// Nil check to prevent panic when accessing msg fields
+	if msg == nil {
+		return fmt.Errorf("cannot add nil conversation message")
+	}
+	if branch == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+	if msg.PlanId == "" {
+		return fmt.Errorf("plan ID cannot be empty in conversation message")
+	}
+
 	errCh := make(chan error, 2)
 
 	go func() {
@@ -193,6 +204,17 @@ func AddPlanConvoMessage(msg *ConvoMessage, branch string) error {
 }
 
 func SyncPlanTokens(orgId, planId, branch string) error {
+	// Validate required parameters to prevent panics
+	if orgId == "" {
+		return fmt.Errorf("org ID cannot be empty")
+	}
+	if planId == "" {
+		return fmt.Errorf("plan ID cannot be empty")
+	}
+	if branch == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+
 	var contexts []*Context
 	var convos []*ConvoMessage
 	errCh := make(chan error, 2)

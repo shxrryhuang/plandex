@@ -11,10 +11,34 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
 )
+
+// gitDebugEnabled controls whether debug logging is enabled for git operations.
+// Set PLANDEX_GIT_DEBUG=true environment variable to enable.
+var (
+	gitDebugEnabled     bool
+	gitDebugEnabledOnce sync.Once
+)
+
+// isGitDebugEnabled checks if git debug logging is enabled via environment variable.
+// The value is cached after the first check for performance.
+func isGitDebugEnabled() bool {
+	gitDebugEnabledOnce.Do(func() {
+		gitDebugEnabled = os.Getenv("PLANDEX_GIT_DEBUG") == "true"
+	})
+	return gitDebugEnabled
+}
+
+// logGitDebug logs a debug message only if git debug logging is enabled.
+func logGitDebug(format string, args ...interface{}) {
+	if isGitDebugEnabled() {
+		log.Printf(format, args...)
+	}
+}
 
 const (
 	maxGitRetries     = 5
@@ -689,96 +713,104 @@ func gitWriteOperation(operation func() error, repoDir, label string) error {
 //   - The status (untracked changes, etc.)
 //   - A directory listing of refs/heads
 //   - A directory listing of .git/ (to spot any leftover lock files or HEAD files)
+//
+// Note: This function only logs output when PLANDEX_GIT_DEBUG=true environment variable is set.
+// This prevents performance impact and log pollution in production environments.
 func (repo *GitRepo) LogGitRepoState() {
+	// Skip all debug logging if not enabled - early return for performance
+	if !isGitDebugEnabled() {
+		return
+	}
+
 	repoDir := getPlanDir(repo.orgId, repo.planId)
 
-	log.Println("[DEBUG] --- Git Repo State ---")
+	logGitDebug("[DEBUG] --- Git Repo State ---")
 
 	// 1. Current branch
 	out, err := exec.Command("git", "-C", repoDir, "branch", "--show-current").CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error running `git branch --show-current`: %v, output: %s", err, string(out))
+		logGitDebug("[DEBUG] error running `git branch --show-current`: %v, output: %s", err, string(out))
 	} else {
-		log.Printf("[DEBUG] Current branch: %s", string(out))
+		logGitDebug("[DEBUG] Current branch: %s", string(out))
 	}
 
 	// 2. Recent commits
 	out, err = exec.Command("git", "-C", repoDir, "log", "--oneline", "-5").CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error running `git log --oneline -5`: %v, output: %s", err, string(out))
+		logGitDebug("[DEBUG] error running `git log --oneline -5`: %v, output: %s", err, string(out))
 	} else {
-		log.Printf("[DEBUG] Recent commits:\n%s", string(out))
+		logGitDebug("[DEBUG] Recent commits:\n%s", string(out))
 	}
 
 	// 3. Git status
 	out, err = exec.Command("git", "-C", repoDir, "status", "--short", "--branch").CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error running `git status`: %v, output: %s", err, string(out))
+		logGitDebug("[DEBUG] error running `git status`: %v, output: %s", err, string(out))
 	} else {
-		log.Printf("[DEBUG] Git status:\n%s", string(out))
+		logGitDebug("[DEBUG] Git status:\n%s", string(out))
 	}
 
 	// 4. Show all refs (to see if `.git/refs/heads/HEAD` exists)
 	out, err = exec.Command("git", "-C", repoDir, "show-ref").CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error running `git show-ref`: %v, output: %s", err, string(out))
+		logGitDebug("[DEBUG] error running `git show-ref`: %v, output: %s", err, string(out))
 	} else {
-		log.Printf("[DEBUG] All refs:\n%s", string(out))
+		logGitDebug("[DEBUG] All refs:\n%s", string(out))
 	}
 
 	// 5. Directory listing of .git/refs/heads
 	headsDir := filepath.Join(repoDir, ".git", "refs", "heads")
 	out, err = exec.Command("ls", "-l", headsDir).CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error listing heads dir: %s, err: %v, output: %s", headsDir, err, string(out))
+		logGitDebug("[DEBUG] error listing heads dir: %s, err: %v, output: %s", headsDir, err, string(out))
 	} else {
-		log.Printf("[DEBUG] .git/refs/heads contents:\n%s", string(out))
+		logGitDebug("[DEBUG] .git/refs/heads contents:\n%s", string(out))
 	}
 
 	// 5a. If there's actually a HEAD file in `.git/refs/heads`, cat it.
 	headRefPath := filepath.Join(headsDir, "HEAD")
 	if _, err := os.Stat(headRefPath); err == nil {
 		// The file `.git/refs/heads/HEAD` exists, which is unusual
-		log.Printf("[DEBUG] Found .git/refs/heads/HEAD. Dumping contents:")
+		logGitDebug("[DEBUG] Found .git/refs/heads/HEAD. Dumping contents:")
 		catOut, _ := exec.Command("cat", headRefPath).CombinedOutput()
-		log.Printf("[DEBUG] .git/refs/heads/HEAD contents:\n%s", string(catOut))
+		logGitDebug("[DEBUG] .git/refs/heads/HEAD contents:\n%s", string(catOut))
 	} else if !os.IsNotExist(err) {
-		log.Printf("[DEBUG] error checking for .git/refs/heads/HEAD: %v", err)
+		logGitDebug("[DEBUG] error checking for .git/refs/heads/HEAD: %v", err)
 	}
 
 	// 6. Directory listing of .git/ in case there's HEAD.lock or index.lock
 	gitDir := filepath.Join(repoDir, ".git")
 	out, err = exec.Command("ls", "-l", gitDir).CombinedOutput()
 	if err != nil {
-		log.Printf("[DEBUG] error listing .git dir: %s, err: %v, output: %s", gitDir, err, string(out))
+		logGitDebug("[DEBUG] error listing .git dir: %s, err: %v, output: %s", gitDir, err, string(out))
 	} else {
-		log.Printf("[DEBUG] .git/ contents:\n%s", string(out))
+		logGitDebug("[DEBUG] .git/ contents:\n%s", string(out))
 	}
 
 	// 6a. If there's a .git/HEAD file, cat it
 	headFilePath := filepath.Join(gitDir, "HEAD")
 	if _, err := os.Stat(headFilePath); err == nil {
-		log.Printf("[DEBUG] .git/HEAD file exists. Dumping contents:")
+		logGitDebug("[DEBUG] .git/HEAD file exists. Dumping contents:")
 		catOut, _ := exec.Command("cat", headFilePath).CombinedOutput()
-		log.Printf("[DEBUG] .git/HEAD contents:\n%s", string(catOut))
+		logGitDebug("[DEBUG] .git/HEAD contents:\n%s", string(catOut))
 	} else if !os.IsNotExist(err) {
-		log.Printf("[DEBUG] error checking for .git/HEAD: %v", err)
+		logGitDebug("[DEBUG] error checking for .git/HEAD: %v", err)
 	}
 
 	// 6b. Check for HEAD.lock or index.lock specifically
 	headLockPath := filepath.Join(gitDir, "HEAD.lock")
 	if _, err := os.Stat(headLockPath); err == nil {
-		log.Printf("[DEBUG] HEAD.lock file exists at: %s", headLockPath)
+		logGitDebug("[DEBUG] HEAD.lock file exists at: %s", headLockPath)
 	} else if !os.IsNotExist(err) {
-		log.Printf("[DEBUG] error checking for HEAD.lock: %v", err)
+		logGitDebug("[DEBUG] error checking for HEAD.lock: %v", err)
 	}
 
 	indexLockPath := filepath.Join(gitDir, "index.lock")
 	if _, err := os.Stat(indexLockPath); err == nil {
-		log.Printf("[DEBUG] index.lock file exists at: %s", indexLockPath)
+		logGitDebug("[DEBUG] index.lock file exists at: %s", indexLockPath)
 	} else if !os.IsNotExist(err) {
-		log.Printf("[DEBUG] error checking for index.lock: %v", err)
+		logGitDebug("[DEBUG] error checking for index.lock: %v", err)
 	}
 
-	log.Println("[DEBUG] --- End Git Repo State ---")
+	logGitDebug("[DEBUG] --- End Git Repo State ---")
 }

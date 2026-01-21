@@ -1,4 +1,5 @@
-# TODO: Add support for more dynamic creation, support for multiple tools, different API providers parameters, etc.
+# Enhanced provider template with support for multiple tools and provider-specific parameters
+# This template supports dynamic tool configuration and different API provider formats
 
 id: {{ .provider_id }}
 config:
@@ -6,15 +7,76 @@ config:
   max_tokens: {{ .max_tokens }}
   response_format: { type: {{ .response_format }} }
   top_p: {{ .top_p }}
+
+  # Support for multiple tools - uses tools array if provided, otherwise falls back to single tool
+  {{- if .tools }}
   tools:
-    [
-      {
-        "type": "{{ .tool_type }}",
-        "function":
-          { "name": "{{ .function_name }}", "parameters": {{ .parameters }} },
-      },
-    ]
+    {{- range .tools }}
+    - type: "{{ .type }}"
+      function:
+        name: "{{ .name }}"
+        {{- if .description }}
+        description: "{{ .description }}"
+        {{- end }}
+        parameters: {{ .parameters }}
+    {{- end }}
+  {{- else if .function_name }}
+  tools:
+    - type: "{{ .tool_type }}"
+      function:
+        name: "{{ .function_name }}"
+        parameters: {{ .parameters }}
+  {{- end }}
+
+  # Tool choice configuration
+  {{- if .tool_choice }}
+  tool_choice: {{ .tool_choice }}
+  {{- else if .tool_choice_type }}
   tool_choice:
     type: "{{ .tool_choice_type }}"
+    {{- if .tool_choice_function_name }}
     function:
       name: "{{ .tool_choice_function_name }}"
+    {{- end }}
+  {{- end }}
+
+  # Provider-specific parameters
+  {{- if eq .provider_type "anthropic" }}
+  # Anthropic-specific configuration
+  {{- if .anthropic_version }}
+  anthropic_version: "{{ .anthropic_version }}"
+  {{- end }}
+  {{- if .system }}
+  system: "{{ .system }}"
+  {{- end }}
+  {{- end }}
+
+  {{- if eq .provider_type "openai" }}
+  # OpenAI-specific configuration
+  {{- if .frequency_penalty }}
+  frequency_penalty: {{ .frequency_penalty }}
+  {{- end }}
+  {{- if .presence_penalty }}
+  presence_penalty: {{ .presence_penalty }}
+  {{- end }}
+  {{- if .seed }}
+  seed: {{ .seed }}
+  {{- end }}
+  {{- end }}
+
+  {{- if eq .provider_type "google" }}
+  # Google/Gemini-specific configuration
+  {{- if .safety_settings }}
+  safety_settings: {{ .safety_settings }}
+  {{- end }}
+  {{- if .generation_config }}
+  generation_config: {{ .generation_config }}
+  {{- end }}
+  {{- end }}
+
+  # Additional custom parameters (pass-through for any provider)
+  {{- if .extra_params }}
+  {{- range $key, $value := .extra_params }}
+  {{ $key }}: {{ $value }}
+  {{- end }}
+  {{- end }}
