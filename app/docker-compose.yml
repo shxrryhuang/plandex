@@ -1,40 +1,66 @@
 services:
   plandex-postgres:
-    image: postgres:latest
-    restart: always
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_PASSWORD: plandex
-      POSTGRES_USER: plandex
-      POSTGRES_DB: plandex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plandex}
+      POSTGRES_USER: ${POSTGRES_USER:-plandex}
+      POSTGRES_DB: ${POSTGRES_DB:-plandex}
     ports:
       - "5432:5432"
     volumes:
       - plandex-db:/var/lib/postgresql/data
     networks:
       - plandex-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plandex} -d ${POSTGRES_DB:-plandex}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
   plandex-server:
     image: plandexai/plandex-server:latest
     # build:
     #   context: .
     #   dockerfile: server/Dockerfile
+    restart: unless-stopped
     volumes:
       - plandex-files:/plandex-server
     ports:
       - "8099:8099"
       - "4000:4000"
     environment:
-      DATABASE_URL: "postgres://plandex:plandex@plandex-postgres:5432/plandex?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-plandex}:${POSTGRES_PASSWORD:-plandex}@plandex-postgres:5432/${POSTGRES_DB:-plandex}?sslmode=disable"
       GOENV: development
       LOCAL_MODE: 1
       PLANDEX_BASE_DIR: /plandex-server
       OLLAMA_BASE_URL: http://host.docker.internal:11434
-      
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - plandex-network
     depends_on:
-      - plandex-postgres
+      plandex-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
     command: [ "/bin/sh", "-c", "/scripts/wait-for-it.sh plandex-postgres:5432 -- ./plandex-server" ]
 
 networks:

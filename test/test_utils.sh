@@ -9,8 +9,14 @@ export GREEN='\033[0;32m'
 export YELLOW='\033[1;33m'
 export NC='\033[0m' # No Color
 
-# Default command
+# Default command - can be overridden by environment variable
 export PLANDEX_CMD="${PLANDEX_CMD:-plandex-dev}"
+
+# Default timeout for LLM operations (in seconds)
+export PLANDEX_TIMEOUT="${PLANDEX_TIMEOUT:-300}"
+
+# Environment file location - can be customized
+export PLANDEX_ENV_FILE="${PLANDEX_ENV_FILE:-../.env.client-keys}"
 
 # Logging functions
 log() {
@@ -118,17 +124,57 @@ check_file() {
 
 # Setup test environment
 setup_test_dir() {
-    source ../.env.client-keys
+    # Source environment file if it exists
+    if [ -f "$PLANDEX_ENV_FILE" ]; then
+        source "$PLANDEX_ENV_FILE"
+        info "Loaded environment from $PLANDEX_ENV_FILE"
+    else
+        info "Warning: Environment file $PLANDEX_ENV_FILE not found, using defaults"
+    fi
 
     local test_name="$1"
     TEST_DIR="/tmp/plandex-${test_name}-$$"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    
+
     info "Setting up test environment in $TEST_DIR"
     mkdir -p "$TEST_DIR"
     cd "$TEST_DIR"
-    
+
     success "Test environment created"
+}
+
+# Run command with timeout support
+run_cmd_with_timeout() {
+    local cmd="$1"
+    local description="$2"
+    local timeout_secs="${3:-$PLANDEX_TIMEOUT}"
+
+    info "Running (timeout ${timeout_secs}s): $cmd"
+
+    # Run command with timeout and capture output and exit code
+    set +e
+    output=$(timeout "$timeout_secs" bash -c "$cmd" 2>&1)
+    local exit_code=$?
+    set -e
+
+    # Log the output
+    echo "$output"
+
+    if [ "$exit_code" -eq 124 ]; then
+        error "$description timed out after ${timeout_secs}s"
+    elif [ "$exit_code" -eq 0 ]; then
+        success "$description"
+    else
+        error "$description failed (exit code: $exit_code)"
+    fi
+}
+
+# Run plandex command with timeout
+run_plandex_cmd_with_timeout() {
+    local cmd="$1"
+    local description="$2"
+    local timeout_secs="${3:-$PLANDEX_TIMEOUT}"
+    run_cmd_with_timeout "$PLANDEX_CMD $cmd" "$description" "$timeout_secs"
 }
 
 # Cleanup function
