@@ -60,12 +60,14 @@ This document provides a comprehensive analysis of the Continuous Integration an
 
 | Test File | Location | Test Count | Status |
 |-----------|----------|------------|--------|
-| `tell_stream_processor_test.go` | `app/server/model/plan/` | 30+ | Configured |
-| `structured_edits_test.go` | `app/server/syntax/` | 25+ | Configured |
-| `unique_replacement_test.go` | `app/server/syntax/` | N/A | Configured |
-| `subtasks_test.go` | `app/server/model/parse/` | N/A | Configured |
-| `reply_test.go` | `app/server/types/` | 10+ | Configured |
-| `whitespace_test.go` | `app/server/utils/` | N/A | Configured |
+| `tell_stream_processor_test.go` | `app/server/model/plan/` | 30 | Configured |
+| `structured_edits_test.go` | `app/server/syntax/` | 25 | Configured |
+| `unique_replacement_test.go` | `app/server/syntax/` | 10 | Configured |
+| `subtasks_test.go` | `app/server/model/parse/` | 6 | Configured |
+| `reply_test.go` | `app/server/types/` | 10 | Configured |
+| `whitespace_test.go` | `app/server/utils/` | 4 | Configured |
+
+**Go Unit Test Total: 85 tests**
 
 ### 2.2 Test Coverage Analysis
 
@@ -119,10 +121,10 @@ PASS
 
 ### 2.3 Warnings and Issues
 
-| Issue ID | Severity | Description | File |
-|----------|----------|-------------|------|
-| GO-001 | LOW | `only` field in test struct used for debugging | `tell_stream_processor_test.go:388` |
-| GO-002 | LOW | Commented assertion in test | `structured_edits_test.go:1507` |
+| Issue ID | Severity | Description | File | Status |
+|----------|----------|-------------|------|--------|
+| GO-001 | LOW | `only` field in test struct used for debugging | `tell_stream_processor_test.go:388` | **FIXED** |
+| GO-002 | LOW | Commented assertion in test | `structured_edits_test.go:1507` | Open |
 
 ---
 
@@ -179,13 +181,15 @@ PASS
 - Model pack configuration
 - OpenRouter provider integration
 
+**Integration Test Total: 41+ tests**
+
 ### 3.4 Warnings and Issues
 
-| Issue ID | Severity | Description | File |
-|----------|----------|-------------|------|
-| INT-001 | MEDIUM | Missing `.env.client-keys` dependency | `test_utils.sh:121` |
-| INT-002 | MEDIUM | Hardcoded `plandex-dev` command | `test_utils.sh:13` |
-| INT-003 | LOW | No timeout handling for LLM calls | `smoke_test.sh` |
+| Issue ID | Severity | Description | File | Status |
+|----------|----------|-------------|------|--------|
+| INT-001 | MEDIUM | Missing `.env.client-keys` dependency | `test_utils.sh:121` | **FIXED** |
+| INT-002 | MEDIUM | Hardcoded `plandex-dev` command | `test_utils.sh:13` | **FIXED** |
+| INT-003 | LOW | No timeout handling for LLM calls | `smoke_test.sh` | **FIXED** |
 
 ---
 
@@ -225,17 +229,30 @@ Running evaluations for build...
 | Validation of code changes | Validates code modifications | No syntax/removal/duplication/reference errors |
 | Removal tests | Tests code removal | Various |
 
+**LLM Evaluation Total: 4 tests**
+
 ### 4.4 Warnings and Issues
 
-| Issue ID | Severity | Description | Location |
-|----------|----------|-------------|----------|
-| EVAL-001 | LOW | Template provider file not linked | `templates/provider.template.yml` |
+| Issue ID | Severity | Description | Location | Status |
+|----------|----------|-------------|----------|--------|
+| EVAL-001 | LOW | Template provider file not linked | `templates/provider.template.yml` | Open |
 
 ---
 
-## 5. Docker Infrastructure Results
+## 5. Test Summary
 
-### 5.1 Dockerfile Analysis
+| Category | Test Count |
+|----------|------------|
+| Go Unit Tests | 85 |
+| Integration Tests | 41+ |
+| LLM Evaluations | 4 |
+| **Total** | **130+** |
+
+---
+
+## 6. Docker Infrastructure Results
+
+### 6.1 Dockerfile Analysis
 
 **File:** `app/server/Dockerfile`
 
@@ -258,7 +275,7 @@ Step 6/15 : WORKDIR /app
 Successfully built [image_id]
 ```
 
-### 5.2 Docker Compose Analysis
+### 6.2 Docker Compose Analysis
 
 **File:** `app/docker-compose.yml`
 
@@ -268,7 +285,7 @@ Successfully built [image_id]
 | plandex-postgres | postgres:latest | 5432 | Configured |
 | plandex-server | plandexai/plandex-server:latest | 8099, 4000 | Configured |
 
-### 5.3 Warnings and Issues
+### 6.3 Warnings and Issues
 
 | Issue ID | Severity | Description | Recommendation |
 |----------|----------|-------------|----------------|
@@ -280,9 +297,9 @@ Successfully built [image_id]
 
 ---
 
-## 6. Test Run Examples (Plandex Specific)
+## 7. Test Run Examples (Plandex Specific)
 
-### 6.1 Example: Plan Creation and Execution
+### 7.1 Example: Plan Creation and Execution
 
 **Input:**
 ```bash
@@ -311,7 +328,7 @@ Running integration tests...
 Test Summary: 7/7 passed
 ```
 
-### 6.2 Example: Branch and Rewind Operations
+### 7.2 Example: Branch and Rewind Operations
 
 **Input:**
 ```bash
@@ -335,7 +352,7 @@ plandex rewind 2 --revert
 Branch Test Summary: 6/6 passed
 ```
 
-### 6.3 Example: LLM Evaluation Test Run
+### 7.3 Example: LLM Evaluation Test Run
 
 **Promptfoo Build Evaluation:**
 ```bash
@@ -363,23 +380,23 @@ Summary: 1/1 tests passed
 
 ---
 
-## 7. Recommended Improvements
+## 8. Recommended Improvements
 
-### 7.1 High Priority
+### 8.1 High Priority
 
 - [ ] Pin Docker image versions to prevent unexpected changes
 - [ ] Add container health checks
 - [ ] Upgrade GitHub Actions to latest versions
 - [ ] Add secrets management for credentials
 
-### 7.2 Medium Priority
+### 8.2 Medium Priority
 
 - [ ] Add Docker layer caching in CI/CD
 - [ ] Implement timeout handling in integration tests
 - [ ] Create environment file templates
 - [ ] Add test coverage reporting
 
-### 7.3 Low Priority
+### 8.3 Low Priority
 
 - [ ] Clean up debug flags in test files
 - [ ] Link template provider files
@@ -387,7 +404,7 @@ Summary: 1/1 tests passed
 
 ---
 
-## 8. Additional Tests and Implementation Ideas
+## 9. Additional Tests and Implementation Ideas
 
 Below are recommended tests and implementations to make the project more robust and bug-proof:
 
