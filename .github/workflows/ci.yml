@@ -1,0 +1,207 @@
+# Continuous Integration Workflow
+#
+# This workflow runs tests, linting, and formatting checks on every push and PR.
+#
+# Checks performed:
+#   - Go formatting (gofmt)
+#   - Go linting (golangci-lint)
+#   - Unit tests with coverage
+#   - Security scanning (gosec)
+#
+# Updated: January 2026
+#
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.23'
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check Go formatting (server)
+        run: |
+          cd app/server
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not formatted:"
+            echo "$unformatted"
+            echo ""
+            echo "Run 'gofmt -w .' to fix formatting issues."
+            exit 1
+          fi
+          echo "All files are properly formatted."
+
+      - name: Check Go formatting (cli)
+        run: |
+          cd app/cli
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not formatted:"
+            echo "$unformatted"
+            echo ""
+            echo "Run 'gofmt -w .' to fix formatting issues."
+            exit 1
+          fi
+          echo "All files are properly formatted."
+
+      - name: Check Go formatting (shared)
+        run: |
+          cd app/shared
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not formatted:"
+            echo "$unformatted"
+            echo ""
+            echo "Run 'gofmt -w .' to fix formatting issues."
+            exit 1
+          fi
+          echo "All files are properly formatted."
+
+      - name: Run golangci-lint (server)
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          working-directory: app/server
+          args: --timeout=5m
+
+      - name: Run golangci-lint (cli)
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          working-directory: app/cli
+          args: --timeout=5m
+
+      - name: Run golangci-lint (shared)
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          working-directory: app/shared
+          args: --timeout=5m
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies (server)
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run server tests with coverage
+        run: |
+          cd app/server
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee test-output.txt
+
+          # Parse test results for summary
+          PASSED=$(grep -c "^--- PASS:" test-output.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" test-output.txt || echo "0")
+
+          echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          # Fail if any tests failed
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED test(s) failed"
+            exit 1
+          fi
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          files: app/server/coverage.out
+          flags: server
+          fail_ci_if_error: false
+
+      - name: Generate coverage report
+        run: |
+          cd app/server
+          go tool cover -func=coverage.out | tail -1 | awk '{print "Total coverage: " $3}'
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run security scan (server)
+        run: |
+          cd app/server
+          gosec -severity medium -confidence medium -exclude-generated ./... || true
+
+      - name: Run security scan (cli)
+        run: |
+          cd app/cli
+          gosec -severity medium -confidence medium -exclude-generated ./... || true
+
+  vet:
+    name: Go Vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run go vet (server)
+        run: |
+          cd app/server
+          go vet ./...
+
+      - name: Run go vet (cli)
+        run: |
+          cd app/cli
+          go vet ./...
+
+      - name: Run go vet (shared)
+        run: |
+          cd app/shared
+          go vet ./...

@@ -1,0 +1,110 @@
+# golangci-lint configuration for Plandex
+#
+# Run locally with: golangci-lint run
+# Documentation: https://golangci-lint.run/usage/configuration/
+#
+# Updated: January 2026
+#
+
+version: "2"
+
+run:
+  # Timeout for analysis
+  timeout: 5m
+  # Include test files
+  tests: true
+
+linters:
+  # Disable all linters by default
+  default: none
+  # Enable specific linters
+  enable:
+    # Bug Detection
+    - errcheck        # Checks for unchecked errors (critical for Go)
+    - govet           # Reports suspicious constructs
+    - staticcheck     # Comprehensive static analysis
+
+    # Code Quality
+    - ineffassign     # Detects unused variable assignments
+    - unused          # Finds unused code
+
+    # Style
+    - misspell        # Finds commonly misspelled words
+
+    # Security
+    - gosec           # Security-focused linter
+
+formatters:
+  enable:
+    - gofmt           # Checks code is formatted with gofmt
+    - goimports       # Manages imports ordering
+  settings:
+    gofmt:
+      simplify: true
+
+linters-settings:
+  errcheck:
+    # Check type assertions
+    check-type-assertions: true
+    # Check blank assignments
+    check-blank: false
+
+  govet:
+    # Enable all analyzers
+    enable-all: true
+    # Disable specific analyzers
+    disable:
+      - fieldalignment  # Too noisy for this codebase
+
+  gosec:
+    # Exclude specific rules
+    excludes:
+      - G104  # Audit errors not checked (covered by errcheck)
+      - G304  # File path provided as taint input (common in CLI tools)
+
+  misspell:
+    # Locale for spelling
+    locale: US
+
+  staticcheck:
+    # Use default checks
+    checks: ["all"]
+
+issues:
+  # Maximum issues per linter
+  max-issues-per-linter: 50
+
+  # Maximum same issues
+  max-same-issues: 3
+
+  # Exclude rules
+  exclude-rules:
+    # Test files have relaxed rules
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+
+    # Generated files
+    - path: ".*\\.gen\\.go$"
+      linters:
+        - errcheck
+        - govet
+        - staticcheck
+
+    # Main files often have unused params
+    - path: main\.go
+      linters:
+        - unused
+
+severity:
+  # Default severity for issues
+  default: warning
+
+  # Rules for severity
+  rules:
+    - linters:
+        - govet
+        - errcheck
+        - staticcheck
+      severity: error

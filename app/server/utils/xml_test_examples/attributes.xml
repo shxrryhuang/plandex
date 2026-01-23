@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XML attributes test file -->
+
+<!-- Single attribute -->
+<file path="main.go">package main</file>
+
+<!-- Multiple attributes -->
+<file path="main.go" lang="go" version="1.0">package main</file>
+
+<!-- Attribute with spaces in value -->
+<file description="main entry point for the application">content</file>
+
+<!-- Attribute with special characters -->
+<file path="src/utils/helper.go">helper functions</file>
+
+<!-- Boolean-like attributes -->
+<file readonly="true" hidden="false">content</file>
+
+<!-- Numeric attributes -->
+<file line="42" column="10">error here</file>
+
+<!-- Empty attribute value -->
+<file path="">empty path</file>
+
+<!-- Attribute with quotes inside (escaped) -->
+<file title="Say &quot;Hello&quot;">greeting</file>
+
+<!-- Multiple same-type elements with different attributes -->
+<files>
+    <file id="1" type="source">source code</file>
+    <file id="2" type="test">test code</file>
+    <file id="3" type="config">configuration</file>
+</files>

@@ -1,0 +1,135 @@
+# Pull Request Checks Workflow
+#
+# This workflow runs on pull requests to ensure code quality before merge.
+#
+# Checks:
+#   - Build verification
+#   - Test execution
+#   - Code coverage threshold
+#   - PR size warnings
+#
+# Updated: January 2026
+#
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened]
+
+env:
+  GO_VERSION: '1.23'
+  MIN_COVERAGE: 30
+
+jobs:
+  build-check:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build server
+        run: |
+          cd app/server
+          go build -v ./...
+
+      - name: Build CLI
+        run: |
+          cd app/cli
+          go build -v ./...
+
+  test-check:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run tests
+        run: |
+          cd app/server
+          go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Check coverage threshold
+        run: |
+          cd app/server
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Current coverage: $COVERAGE%"
+          echo "Minimum required: ${{ env.MIN_COVERAGE }}%"
+
+          if (( $(echo "$COVERAGE < ${{ env.MIN_COVERAGE }}" | bc -l) )); then
+            echo "::warning::Coverage ($COVERAGE%) is below threshold (${{ env.MIN_COVERAGE }}%)"
+          fi
+
+      - name: Test Summary
+        run: |
+          cd app/server
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          go test ./... -v 2>&1 | grep -E "^(ok|FAIL|---)" | head -50 >> $GITHUB_STEP_SUMMARY
+
+  pr-size:
+    name: PR Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check PR size
+        run: |
+          # Get changed files count
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | wc -l)
+          ADDED=$(git diff --stat origin/${{ github.base_ref }}...HEAD | tail -1 | awk '{print $4}')
+          DELETED=$(git diff --stat origin/${{ github.base_ref }}...HEAD | tail -1 | awk '{print $6}')
+
+          echo "## PR Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Files Changed | $CHANGED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lines Added | $ADDED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lines Deleted | $DELETED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$CHANGED" -gt 50 ]; then
+            echo "::warning::Large PR detected ($CHANGED files). Consider breaking into smaller PRs."
+          fi
+
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check for dependency issues
+        run: |
+          cd app/server
+          go mod verify
+          go mod tidy -diff

@@ -1,0 +1,33 @@
+# CODEOWNERS - Automatic review assignments
+#
+# These owners will be requested for review when someone opens a pull request
+# that modifies code they own.
+#
+# Documentation: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+* @plandex-team
+
+# Server code
+/app/server/ @plandex-team
+
+# CLI code
+/app/cli/ @plandex-team
+
+# Shared library
+/app/shared/ @plandex-team
+
+# CI/CD configuration
+/.github/ @plandex-team
+
+# Docker configuration
+/app/server/Dockerfile @plandex-team
+/app/docker-compose.yml @plandex-team
+
+# Documentation
+/docs/ @plandex-team
+*.md @plandex-team
+
+# Test files
+*_test.go @plandex-team
+/test/ @plandex-team

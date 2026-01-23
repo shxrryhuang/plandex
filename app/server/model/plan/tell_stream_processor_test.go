@@ -435,9 +435,11 @@ func TestBufferOrStream(t *testing.T) {
 			name: "stop prefix turns out to be different tag, falls through to other parsing logic #2",
 			initialState: &chunkProcessor{
 				contentBuffer: "something\n<Plandex",
+				fileOpen:      true,
 			},
-			chunk:      "exBlock lang=\"go\" path=\"main.go\">\npackage",
-			manualStop: []string{"<PlandexFinish/>"},
+			chunk:           "Block lang=\"go\" path=\"main.go\">\npackage",
+			currentFilePath: "main.go",
+			manualStop:      []string{"<PlandexFinish/>"},
 			want: bufferOrStreamResult{
 				shouldStream: true,
 				content:      "something\n```go\npackage",

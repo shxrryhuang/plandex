@@ -1,0 +1,93 @@
+# Dependabot Configuration
+#
+# Automatically creates PRs to update dependencies.
+#
+# Documentation: https://docs.github.com/en/code-security/dependabot
+#
+# Updated: January 2026
+#
+version: 2
+
+updates:
+  # Go modules for server
+  - package-ecosystem: "gomod"
+    directory: "/app/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(server)"
+    labels:
+      - "dependencies"
+      - "server"
+    reviewers:
+      - "plandex-team"
+    groups:
+      go-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Go modules for CLI
+  - package-ecosystem: "gomod"
+    directory: "/app/cli"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cli)"
+    labels:
+      - "dependencies"
+      - "cli"
+    reviewers:
+      - "plandex-team"
+
+  # Go modules for shared
+  - package-ecosystem: "gomod"
+    directory: "/app/shared"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(shared)"
+    labels:
+      - "dependencies"
+      - "shared"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "ci"
+
+  # Docker
+  - package-ecosystem: "docker"
+    directory: "/app/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "docker"
+    labels:
+      - "dependencies"
+      - "docker"

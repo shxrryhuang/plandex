@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XML entities test file -->
+
+<!-- Ampersand entity -->
+<code>foo &amp; bar</code>
+
+<!-- Less than entity -->
+<code>if a &lt; b</code>
+
+<!-- Greater than entity -->
+<code>if a &gt; b</code>
+
+<!-- Quote entity -->
+<code>say &quot;hello&quot;</code>
+
+<!-- Apostrophe entity -->
+<code>it&apos;s working</code>
+
+<!-- Mixed entities -->
+<code>if a &lt; b &amp;&amp; c &gt; d</code>
+
+<!-- Entities in attributes -->
+<file path="a&amp;b.txt">content</file>
+
+<!-- Numeric character references -->
+<code>&#60;tag&#62;</code>
+
+<!-- Hex character references -->
+<code>&#x3C;tag&#x3E;</code>
+
+<!-- Complex expression with entities -->
+<expression>
+    result = (a &lt; b) ? &quot;less&quot; : &quot;greater&quot;;
+    if (x &gt;= 0 &amp;&amp; x &lt;= 100) {
+        return x;
+    }
+</expression>

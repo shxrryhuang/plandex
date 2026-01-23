@@ -185,10 +185,13 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 			}
 
 			// otherwise if the buffer plus chunk contains the stop sequence, don't stream anything and stop the stream
-			if strings.Contains(processor.contentBuffer+content, stopSequence) {
+			combined := processor.contentBuffer + content
+			if strings.Contains(combined, stopSequence) {
 				log.Printf("bufferOrStream - stop sequence found in buffer plus chunk\n")
-				split := strings.Split(content, stopSequence)
-				if len(split) > 1 {
+				split := strings.Split(combined, stopSequence)
+				// Update buffer to contain the complete stop sequence
+				processor.contentBuffer = stopSequence
+				if len(split) > 1 && len(split[0]) > 0 {
 					// we'll stream the part before the stop sequence
 					return bufferOrStreamResult{
 						shouldStream: true,
@@ -238,6 +241,12 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 
 	awaitingTag := processor.awaitingBlockOpeningTag || processor.awaitingBlockClosingTag || processor.awaitingOpClosingTag
 	awaitingAny := awaitingTag || processor.awaitingBackticks
+
+	// If contentBuffer has content from previous stop sequence prefix checks, combine it with current content
+	if processor.contentBuffer != "" && !awaitingAny {
+		processor.contentBuffer += content
+		content = processor.contentBuffer
+	}
 
 	if awaitingAny {
 		if verboseLogging {

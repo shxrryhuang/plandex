@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simple XML tags test file -->
+
+<!-- Basic tag with content -->
+<file>content here</file>
+
+<!-- Tag with attributes -->
+<file path="main.go" lang="go">package main</file>
+
+<!-- Empty tag -->
+<file></file>
+
+<!-- Self-closing tag -->
+<file/>
+
+<!-- Tag with newlines -->
+<file>
+line1
+line2
+line3
+</file>
+
+<!-- Multiple tags -->
+<files>
+    <file path="a.go">content a</file>
+    <file path="b.go">content b</file>
+    <file path="c.go">content c</file>
+</files>

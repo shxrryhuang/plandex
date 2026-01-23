@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CDATA sections test file -->
+
+<!-- Simple CDATA -->
+<code><![CDATA[raw content here]]></code>
+
+<!-- CDATA with special characters -->
+<code><![CDATA[<script>alert('test')</script>]]></code>
+
+<!-- CDATA with code -->
+<code><![CDATA[
+function hello() {
+    if (a < b && c > d) {
+        return "Hello & World";
+    }
+}
+]]></code>
+
+<!-- Empty CDATA -->
+<code><![CDATA[]]></code>
+
+<!-- CDATA with XML-like content -->
+<template><![CDATA[
+<div class="container">
+    <h1>Title</h1>
+    <p>Content with <strong>formatting</strong></p>
+</div>
+]]></template>
+
+<!-- Multiple CDATA sections -->
+<scripts>
+    <script name="init"><![CDATA[
+        console.log("Initializing...");
+    ]]></script>
+    <script name="main"><![CDATA[
+        function main() {
+            // Main logic here
+        }
+    ]]></script>
+</scripts>
+
+<!-- CDATA with SQL -->
+<query><![CDATA[
+SELECT * FROM users
+WHERE age > 18 AND status = 'active'
+ORDER BY name ASC
+]]></query>
+
+<!-- CDATA with regex -->
+<pattern><![CDATA[^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$]]></pattern>

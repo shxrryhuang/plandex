@@ -37,6 +37,7 @@ func (fileState *activeBuildStreamFileState) buildStructuredEdits() {
 	}
 
 	buildCtx, cancelBuild := context.WithCancel(activePlan.Ctx)
+	defer cancelBuild() // Ensure context is cancelled on all exit paths
 
 	proposedContent := activeBuild.FileContent
 	desc := activeBuild.FileDescription

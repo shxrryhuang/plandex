@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Nested tags test file -->
+
+<!-- Single level nesting -->
+<outer>
+    <inner>content</inner>
+</outer>
+
+<!-- Multiple siblings -->
+<outer>
+    <inner>1</inner>
+    <inner>2</inner>
+    <inner>3</inner>
+</outer>
+
+<!-- Deep nesting -->
+<level1>
+    <level2>
+        <level3>
+            <level4>
+                <level5>deep content</level5>
+            </level4>
+        </level3>
+    </level2>
+</level1>
+
+<!-- Mixed content -->
+<parent>
+    Some text before
+    <child>child content</child>
+    Some text after
+</parent>
+
+<!-- Complex structure -->
+<root>
+    <section id="1">
+        <title>Section One</title>
+        <content>
+            <paragraph>First paragraph</paragraph>
+            <paragraph>Second paragraph</paragraph>
+        </content>
+        <metadata>
+            <author>John</author>
+            <date>2024-01-15</date>
+        </metadata>
+    </section>
+    <section id="2">
+        <title>Section Two</title>
+        <content>
+            <paragraph>Another paragraph</paragraph>
+        </content>
+    </section>
+</root>
+
+<!-- Repeated nested structures -->
+<items>
+    <item>
+        <name>Item 1</name>
+        <properties>
+            <property key="color">red</property>
+            <property key="size">large</property>
+        </properties>
+    </item>
+    <item>
+        <name>Item 2</name>
+        <properties>
+            <property key="color">blue</property>
+            <property key="size">small</property>
+        </properties>
+    </item>
+</items>
