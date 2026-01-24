@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
-**Version:** 1.0
-**Last Updated:** January 2026
+**Version:** 1.1
+**Last Updated:** January 2026 (Added Recovery & Resilience System)
 
 ---
 
@@ -17,6 +17,7 @@
 8. [Security Architecture](#8-security-architecture)
 9. [Deployment Architecture](#9-deployment-architecture)
 10. [Performance Considerations](#10-performance-considerations)
+11. [Recovery & Resilience System](#11-recovery--resilience-system)
 
 ---
 
@@ -211,12 +212,22 @@ Common types shared between CLI and server.
 
 ```
 app/shared/
-├── data_models.go          # Core API types
-├── ai_models_available.go  # Available models
-├── ai_models_providers.go  # Provider configs
-├── plan_config.go          # Plan settings
-├── context.go              # Context types
-└── req_res.go              # Request/response wrappers
+├── data_models.go            # Core API types
+├── ai_models_available.go    # Available models
+├── ai_models_providers.go    # Provider configs
+├── ai_models_errors.go       # Model error types
+├── plan_config.go            # Plan settings
+├── context.go                # Context types
+├── req_res.go                # Request/response wrappers
+│
+├── # Recovery & Resilience System
+├── provider_failures.go      # Provider failure classification
+├── file_transaction.go       # Transactional file operations
+├── resume_algorithm.go       # Safe resume from checkpoints
+├── error_report.go           # Comprehensive error reporting
+├── unrecoverable_errors.go   # Unrecoverable edge cases
+├── run_journal.go            # Execution journal & checkpoints
+└── replay_types.go           # Replay mode types
 ```
 
 ---
@@ -808,6 +819,182 @@ Summarization triggered when conversation exceeds threshold
 - Database locks for plan execution
 - Heartbeat system for active plans
 - Graceful shutdown with 60s timeout for active operations
+
+---
+
+## 11. Recovery & Resilience System
+
+### 11.1 Overview
+
+The recovery system provides fault tolerance for AI-assisted coding operations through:
+- **Provider Failure Classification** - Distinguishing retryable vs non-retryable errors
+- **Transactional File Operations** - ACID-like guarantees with rollback support
+- **Resume Algorithm** - Safe continuation from checkpoints
+- **Comprehensive Error Reporting** - Root cause, context, and recovery guidance
+
+### 11.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       RECOVERY & RESILIENCE SYSTEM                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    Provider Failure Classification                    │   │
+│  │                      (provider_failures.go)                          │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │   │
+│  │  │  Retryable  │  │Non-Retryable│  │     Retry Strategy          │  │   │
+│  │  │ rate_limit  │  │quota_exhaust│  │ • Exponential backoff       │  │   │
+│  │  │ overloaded  │  │auth_invalid │  │ • Respect Retry-After       │  │   │
+│  │  │server_error │  │content_policy│  │ • Provider fallback        │  │   │
+│  │  │  timeout    │  │context_long │  │ • Max attempts              │  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                   Transactional File Operations                       │   │
+│  │                      (file_transaction.go)                           │   │
+│  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌─────────────────┐   │   │
+│  │  │ Snapshots │  │Operations │  │Checkpoints│  │   WAL/Journal   │   │   │
+│  │  │ Original  │  │ Create    │  │ Named     │  │ Crash recovery  │   │   │
+│  │  │ content   │  │ Modify    │  │ restore   │  │ Write-ahead log │   │   │
+│  │  │ captured  │  │ Delete    │  │ points    │  │                 │   │   │
+│  │  └───────────┘  │ Rename    │  └───────────┘  └─────────────────┘   │   │
+│  │                 └───────────┘                                        │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        Resume Algorithm                               │   │
+│  │                     (resume_algorithm.go)                            │   │
+│  │                                                                       │   │
+│  │  1. Select Checkpoint ──▶ 2. Validate Journal ──▶ 3. Validate Files │   │
+│  │          │                                                │          │   │
+│  │          ▼                                                ▼          │   │
+│  │  4. Handle Divergences ◀── 5. Dry Run Check ◀── 6. Create Backup   │   │
+│  │          │                                                           │   │
+│  │          ▼                                                           │   │
+│  │  7. Restore Files ──────▶ 8. Update Journal State                   │   │
+│  │                                                                       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                      Error Reporting System                           │   │
+│  │              (error_report.go, unrecoverable_errors.go)              │   │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │   │
+│  │  │   Root Cause    │  │  Step Context   │  │  Recovery Action    │  │   │
+│  │  │ • Category      │  │ • Plan/Entry    │  │ • Auto-recoverable? │  │   │
+│  │  │ • Type/Code     │  │ • Phase         │  │ • Retry strategy    │  │   │
+│  │  │ • HTTP code     │  │ • Transaction   │  │ • Manual actions    │  │   │
+│  │  │ • Provider      │  │ • Model context │  │ • Alternatives      │  │   │
+│  │  └─────────────────┘  └─────────────────┘  └─────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 11.3 Provider Failure Classification
+
+**Retryable Failures:**
+| Type | HTTP Code | Strategy |
+|------|-----------|----------|
+| Rate Limit | 429 | Exponential backoff, respect Retry-After |
+| Overloaded | 503, 529 | Backoff + provider fallback |
+| Server Error | 500, 502 | Immediate retry with backoff |
+| Timeout | 504 | Immediate retry |
+
+**Non-Retryable Failures:**
+| Type | HTTP Code | Required Action |
+|------|-----------|-----------------|
+| Auth Invalid | 401 | Fix API credentials |
+| Quota Exhausted | 402, 429* | Add credits/upgrade |
+| Context Too Long | 400, 413 | Reduce input size |
+| Content Policy | 400 | Modify content |
+
+### 11.4 Transactional File Operations
+
+```go
+// Transaction lifecycle
+tx := NewFileTransaction(planId, branch, workDir)
+tx.Begin()
+
+tx.ModifyFile("src/auth.go", newContent)  // Snapshot captured
+tx.CreateFile("src/login.go", content)    // Tracked for rollback
+
+checkpoint := tx.CreateCheckpoint("after_auth", "Completed auth changes")
+
+// On provider failure:
+if err := tx.RollbackOnProviderFailure(failure); err != nil {
+    // Files restored to pre-transaction state
+}
+
+// Or on success:
+tx.Commit()
+```
+
+### 11.5 Resume Algorithm
+
+The 8-step safe resume process:
+
+1. **Select Checkpoint** - By name, latest, or last known good
+2. **Validate Journal** - Verify integrity hash matches
+3. **Validate Files** - Compare current state vs checkpoint
+4. **Handle Divergences** - Report or repair (file_missing, hash_mismatch, file_extra)
+5. **Dry Run Check** - Optional validation-only mode
+6. **Create Backup** - Optional safety backup before resume
+7. **Restore Files** - From checkpoint.FileContents if requested
+8. **Update State** - Mark entries for replay
+
+### 11.6 Unrecoverable Edge Cases
+
+The system explicitly identifies scenarios where automatic recovery is impossible:
+
+| Category | Examples | User Communication |
+|----------|----------|-------------------|
+| Provider Limit | Quota exhausted, context too long | Manual action required with specific commands |
+| Authentication | Invalid API key, permission denied | Credential update instructions |
+| Data Loss | Checkpoint lost, journal corrupted | Partial recovery options, backup restoration |
+| External State | Concurrent modification, file conflicts | Merge guidance, divergence resolution |
+| System Resource | Disk full, permission errors | System administration actions |
+
+### 11.7 Idempotency Guarantees
+
+Retries are guaranteed to produce identical results through:
+
+1. **Snapshot-based rollback** - Original content captured once, restored before retry
+2. **Journal entry deduplication** - Status tracking prevents re-execution of completed steps
+3. **Hash-based verification** - File states validated against expected hashes
+4. **Operation sequencing** - Strict ordering with rollback in reverse order
+
+### 11.8 Key Files
+
+```
+app/shared/
+├── provider_failures.go       # Provider failure classification (900+ lines)
+├── provider_failures_test.go  # 18 test cases
+├── file_transaction.go        # Transactional file operations (600+ lines)
+├── file_transaction_test.go   # 21 test cases
+├── resume_algorithm.go        # Safe resume from checkpoint (600+ lines)
+├── resume_algorithm_test.go   # 18 test cases
+├── error_report.go            # Comprehensive error reporting (500+ lines)
+├── error_report_test.go       # 16 test cases
+├── unrecoverable_errors.go    # Edge case documentation (600+ lines)
+├── unrecoverable_errors_test.go # 16 test cases
+└── run_journal.go             # Execution journal with checkpoints
+```
+
+### 11.9 Test Coverage
+
+| Component | Tests | Coverage |
+|-----------|-------|----------|
+| Provider Failures | 18 | Classification, retry strategies, real-world scenarios |
+| File Transaction | 21 | CRUD, rollback, checkpoints, provider failure handling |
+| Resume Algorithm | 18 | Checkpoint selection, validation, repair actions |
+| Error Reporting | 16 | Formatting, context, recovery actions |
+| Unrecoverable Errors | 16 | Edge cases, user communication |
+| **Total** | **89** | Full recovery system coverage |
 
 ---
 
