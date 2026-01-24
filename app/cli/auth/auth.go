@@ -89,7 +89,7 @@ func MustResolveAuth(requireOrg bool) {
 
 func RefreshInvalidToken() error {
 	if Current == nil {
-		return fmt.Errorf("error refreshing token: auth not loaded")
+		return fmt.Errorf("error refreshing token: authentication not loaded. Please run 'plandex sign-in' to authenticate")
 	}
 	res, err := verifyEmail(Current.Email, Current.Host)
 
@@ -113,7 +113,7 @@ func RefreshInvalidToken() error {
 
 func RefreshAuth() error {
 	if Current == nil {
-		return fmt.Errorf("error refreshing auth: auth not loaded")
+		return fmt.Errorf("error refreshing auth: authentication not loaded. Please run 'plandex sign-in' to authenticate")
 	}
 
 	org, apiErr := apiClient.GetOrgSession()

@@ -59,7 +59,7 @@ func SelectOrSignInOrCreate() error {
 	}
 
 	if selected == nil {
-		return fmt.Errorf("error selecting account: account not found")
+		return fmt.Errorf("error selecting account: account not found. Try 'plandex sign-in' to authenticate or check your credentials")
 	}
 
 	selectedAuth := *selected
@@ -347,7 +347,7 @@ func createAccount(email, pin, host string, isLocalMode bool) error {
 	}
 
 	if org == nil {
-		return fmt.Errorf("no org selected")
+		return fmt.Errorf("no organization selected. Use 'plandex orgs' to list available organizations and select one")
 	}
 
 	Current.OrgId = org.Id

@@ -111,10 +111,12 @@ def main():
             write_log_entry_atomic(log_file, log_entry)
 
         elif event_type == "end":
-            # Session end: log the event
+            # Session end: log the event with duration info
+            end_time = datetime.now(timezone.utc)
+
             log_entry = {
                 "type": "session_end",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": end_time.isoformat(),
                 "session_id": session_id,
                 "transcript_path": transcript_path,
                 "cwd": cwd,
@@ -126,6 +128,10 @@ def main():
             # Write session_end event with atomic locking
             log_file = get_log_file_path(session_id, cwd)
             write_log_entry_atomic(log_file, log_entry)
+
+            # Report session end
+            reason = input_data.get("reason", "completed")
+            print(f"[OK] Session ended: {session_id[:16]}... ({reason})")
 
     except Exception as e:
         import traceback

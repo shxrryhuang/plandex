@@ -75,6 +75,104 @@ The system follows a **client-server architecture** with three main components:
 
 ---
 
+## Recently Fixed Bugs (January 2026)
+
+### Bug #0.1: Timer Drain Deadlock in Stream Processing ✅ FIXED
+
+**Location**: `app/server/model/plan/tell_stream_main.go:148-153, 236-241` and `app/server/model/client_stream.go:160-164, 197-203`
+
+**Status**: **RESOLVED**
+
+**Description**: Timer drain operations could deadlock when a timer had already fired and been read, but the code attempted a blocking drain.
+
+**Root Cause**: The pattern `if !timer.Stop() { <-timer.C }` assumes the timer channel has a value after `Stop()` returns false. However, if the timer fired and was already consumed by a select case, the channel is empty and the blocking read deadlocks.
+
+**Fix Applied**:
+```go
+// Before (could deadlock):
+if !timer.Stop() {
+    <-timer.C
+}
+
+// After (non-blocking):
+if !timer.Stop() {
+    select {
+    case <-timer.C:
+    default:
+    }
+}
+```
+
+**Files Changed**:
+- `app/server/model/plan/tell_stream_main.go` (2 locations)
+- `app/server/model/client_stream.go` (2 locations)
+
+---
+
+### Bug #0.2: Missing Return After Error Channel Send ✅ FIXED
+
+**Location**: `app/cli/fs/paths.go:64-65`
+
+**Status**: **RESOLVED**
+
+**Description**: Goroutine continued execution after sending an error to the error channel, potentially causing undefined behavior.
+
+**Root Cause**: A missing `return` statement after `errCh <- fmt.Errorf(...)` allowed the goroutine to continue executing subsequent code that assumed no error occurred.
+
+**Fix Applied**:
+```go
+if err != nil {
+    errCh <- fmt.Errorf("error getting git status: %s", err)
+    return  // Added this line
+}
+```
+
+---
+
+### Bug #0.3: Duplicate Log Messages in Activate ✅ FIXED
+
+**Location**: `app/server/model/plan/activate.go`
+
+**Status**: **RESOLVED**
+
+**Description**: Three identical log statements were being printed for the same error condition, making logs noisy and harder to parse.
+
+**Fix Applied**: Consolidated three duplicate `log.Printf` statements into a single descriptive log message.
+
+---
+
+### Bug #0.4: Session File Race Conditions ✅ FIXED
+
+**Location**: `.claude/hooks/capture_session_event.py`
+
+**Status**: **RESOLVED**
+
+**Description**: Multiple issues in the session capture system:
+1. No file locking allowed concurrent writes to corrupt log files
+2. Missing/unknown session IDs caused file overwrites between sessions
+3. Exception handler referenced undefined variable
+
+**Fixes Applied**:
+1. Added `fcntl.flock()` for atomic writes with file locking
+2. Added fallback session ID generation when session_id is missing
+3. Initialized `event_type` before try block to avoid undefined variable
+
+**New Helper Function**:
+```python
+def write_log_entry_atomic(log_file, log_entry):
+    """Write a log entry atomically with file locking."""
+    with open(log_file, "a", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(log_entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+```
+
+---
+
 ## Resolved Bugs (Previously Active TODOs)
 
 ### Bug #1: Missing User Name in Conversation Descriptions ✅ FIXED
@@ -368,12 +466,16 @@ Some custom models could use XML format but the tool calling code path assumed J
 
 | Priority | Location | Issue | Status |
 |----------|----------|-------|--------|
+| **High** | `tell_stream_main.go`, `client_stream.go` | Timer drain deadlock | ✅ Fixed |
+| **High** | `paths.go:64` | Missing return after error send | ✅ Fixed |
+| **Medium** | `activate.go` | Duplicate log messages | ✅ Fixed |
+| **High** | `capture_session_event.py` | Session file race conditions | ✅ Fixed |
 | Medium | `convo_helpers.go:177` | Add user name to conversation descriptions | ✅ Fixed |
 | Low | `provider.template.yml` | Enhance eval framework flexibility | ✅ Fixed |
 | Medium | `git.go:727-815` | Remove/gate debug logging | ✅ Fixed |
 | High | Multiple server files | Panic recovery patterns | ✅ Addressed (defensive) |
 
-**All previously open TODOs have been resolved as of January 2026.**
+**All TODOs have been resolved as of January 2026.**
 
 ## Historical Fixes Reference
 

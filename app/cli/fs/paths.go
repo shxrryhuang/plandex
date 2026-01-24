@@ -16,7 +16,7 @@ import (
 
 func GetProjectPaths(baseDir string) (*types.ProjectPaths, error) {
 	if ProjectRoot == "" {
-		return nil, fmt.Errorf("no project root found")
+		return nil, fmt.Errorf("no project root found. Make sure you are inside a project directory or run 'plandex init' to create one")
 	}
 
 	return GetPaths(baseDir, ProjectRoot)

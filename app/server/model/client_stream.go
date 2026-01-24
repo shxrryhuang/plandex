@@ -158,7 +158,10 @@ func processChatCompletionStream(
 			}
 
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			timer.Reset(ACTIVE_STREAM_CHUNK_TIMEOUT)
 
@@ -195,7 +198,10 @@ func processChatCompletionStream(
 					} else {
 						// Reset the timer for the usage chunk
 						if !timer.Stop() {
-							<-timer.C
+							select {
+							case <-timer.C:
+							default:
+							}
 						}
 						timer.Reset(USAGE_CHUNK_TIMEOUT)
 						streamFinished = true
