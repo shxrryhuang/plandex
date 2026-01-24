@@ -101,7 +101,7 @@ func DeleteActivePlan(orgId, userId, planId, branch string) {
 
 	activePlan := GetActivePlan(planId, branch)
 	if activePlan == nil {
-		log.Printf("DeleteActivePlan - No active plan found for plan ID %s on branch %s\n", planId, branch)
+		log.Printf("DeleteActivePlan - No active plan found for plan ID %s on branch %s. Plan may have already been cleaned up or never existed.\n", planId, branch)
 		return
 	}
 

@@ -202,12 +202,12 @@ func (q *repoQueue) runQueue() {
 			}
 
 			if err != nil {
-				log.Printf("[Queue] Failed to get DB lock: %v", err)
+				log.Printf("[Queue] Failed to get DB lock for plan %s, branch %s, reason %s: %v", firstOp.planId, firstOp.branch, firstOp.reason, err)
 				for _, op := range ops {
 					if locksVerboseLogging {
 						log.Printf("[Queue] Notifying operation %s (%s) of lock failure", op.id, op.reason)
 					}
-					op.done <- fmt.Errorf("failed to get DB lock: %w", err)
+					op.done <- fmt.Errorf("failed to get DB lock for operation '%s': %w. This may be due to another active operation on this plan or a database connectivity issue", op.reason, err)
 				}
 				// we still need to process the rest of the queue
 				// if the error is critical, caller will handle it

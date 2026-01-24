@@ -103,7 +103,7 @@ func execTellPlan(params execTellPlanParams) {
 	active := GetActivePlan(plan.Id, branch)
 
 	if active == nil {
-		log.Printf("execTellPlan: Active plan not found for plan ID %s on branch %s\n", plan.Id, branch)
+		log.Printf("execTellPlan: Active plan not found for plan ID %s on branch %s. This may indicate the plan was stopped, timed out, or encountered a previous error.\n", plan.Id, branch)
 		return
 	}
 

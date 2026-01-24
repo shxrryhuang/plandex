@@ -569,8 +569,8 @@ func retryWithExponentialBackoff(
 ) (string, error) {
 	// If we have retried enough times, bail out.
 	if attempt >= maxLockRetries {
-		log.Printf("[Lock][Retry][%d] Failed to acquire lock after %d attempts: %v", getGoroutineID(), attempt, cause)
-		return "", fmt.Errorf("failed to acquire lock after %d attempts: %w", attempt, cause)
+		log.Printf("[Lock][Retry][%d] Failed to acquire lock after %d attempts: %v. This may indicate a long-running operation is blocking the plan or a stale lock exists.", getGoroutineID(), attempt, cause)
+		return "", fmt.Errorf("failed to acquire lock after %d attempts (cause: %w). Another operation may be in progress or a previous operation did not release its lock properly. Try again in a few seconds", attempt, cause)
 	}
 
 	// Exponential delay: initialRetryDelay * 2^(attempt)

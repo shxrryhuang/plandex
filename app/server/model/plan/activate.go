@@ -65,9 +65,7 @@ func activatePlan(
 	}
 	err = db.StoreModelStream(modelStream, active.Ctx, active.CancelFn)
 	if err != nil {
-		log.Printf("Tell: Error storing model stream for plan ID %s on branch %s: %v\n", plan.Id, branch, err) // Log error storing model stream
-		log.Printf("Error storing model stream: %v\n", err)
-		log.Printf("Tell: Error storing model stream: %v\n", err) // Log error storing model stream
+		log.Printf("Tell: Error storing model stream for plan ID %s on branch %s: %v\n", plan.Id, branch, err)
 
 		active.StreamDoneCh <- &shared.ApiError{Msg: fmt.Sprintf("Error storing model stream: %v", err)}
 

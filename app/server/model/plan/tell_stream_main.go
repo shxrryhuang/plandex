@@ -27,7 +27,7 @@ func (state *activeTellStreamState) listenStream(stream *model.ExtendedChatCompl
 	active := GetActivePlan(planId, branch)
 
 	if active == nil {
-		log.Printf("listenStream - Active plan not found for plan ID %s on branch %s\n", planId, branch)
+		log.Printf("listenStream - Active plan not found for plan ID %s on branch %s. The plan may have been stopped or cleaned up before the stream could start.\n", planId, branch)
 		return
 	}
 
@@ -144,8 +144,12 @@ mainLoop:
 			return
 		case response := <-respCh:
 			// Successfully received a chunk, reset the timer
+			// Use non-blocking drain to avoid deadlock if timer already fired
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			timer.Reset(model.ACTIVE_STREAM_CHUNK_TIMEOUT)
 
@@ -228,8 +232,12 @@ mainLoop:
 				}
 
 				// Reset the timer for the usage chunk
+				// Use non-blocking drain to avoid deadlock if timer already fired
 				if !timer.Stop() {
-					<-timer.C
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				timer.Reset(model.USAGE_CHUNK_TIMEOUT)
 				streamFinished = true

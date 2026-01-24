@@ -62,6 +62,7 @@ func GetPaths(baseDir, currentDir string) (*types.ProjectPaths, error) {
 			out, err := cmd.Output()
 			if err != nil {
 				errCh <- fmt.Errorf("error getting git status: %s", err)
+				return
 			}
 
 			lines := strings.Split(string(out), "\n")

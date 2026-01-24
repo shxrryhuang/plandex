@@ -47,7 +47,7 @@ func (state *activeTellStreamState) onError(params onErrorParams) onErrorResult 
 	active := GetActivePlan(planId, branch)
 
 	if active == nil {
-		log.Printf("tellStream onError - Active plan not found for plan ID %s on branch %s\n", planId, branch)
+		log.Printf("tellStream onError - Active plan not found for plan ID %s on branch %s. The plan may have been stopped, timed out, or encountered a previous fatal error.\n", planId, branch)
 		return onErrorResult{
 			shouldReturn: true,
 		}
@@ -262,9 +262,9 @@ func (state *activeTellStreamState) onError(params onErrorParams) onErrorResult 
 func (state *activeTellStreamState) onActivePlanMissingError() {
 	planId := state.plan.Id
 	branch := state.branch
-	log.Printf("Active plan not found for plan ID %s on branch %s\n", planId, branch)
+	log.Printf("Active plan not found for plan ID %s on branch %s. Plan may have been stopped or timed out during streaming.\n", planId, branch)
 	state.onError(onErrorParams{
-		streamErr: fmt.Errorf("active plan not found for plan ID %s on branch %s", planId, branch),
+		streamErr: fmt.Errorf("plan execution interrupted: the plan (ID: %s, branch: %s) is no longer active. This can happen if the plan was stopped, timed out, or encountered a network error. Try running the command again", planId, branch),
 		storeDesc: true,
 	})
 }
