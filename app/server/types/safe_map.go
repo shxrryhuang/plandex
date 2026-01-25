@@ -38,10 +38,30 @@ func (sm *SafeMap[V]) Update(key string, fn func(V)) {
 	}
 }
 
+// Items returns a shallow copy of the map. The returned map is safe to
+// iterate and mutate without holding the SafeMap's lock.
 func (sm *SafeMap[V]) Items() map[string]V {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	return sm.items
+	cp := make(map[string]V, len(sm.items))
+	for k, v := range sm.items {
+		cp[k] = v
+	}
+	return cp
+}
+
+// SetIfAbsent atomically checks whether key already exists. If absent it
+// stores value and returns (zeroValue, false). If present it leaves the
+// existing entry untouched and returns (existingValue, true).
+func (sm *SafeMap[V]) SetIfAbsent(key string, value V) (V, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if existing, ok := sm.items[key]; ok {
+		return existing, true
+	}
+	sm.items[key] = value
+	var zero V
+	return zero, false
 }
 
 func (sm *SafeMap[V]) Keys() []string {

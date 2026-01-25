@@ -32,6 +32,7 @@ func ListLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var body string
 	var shas []string
@@ -98,13 +99,13 @@ func RewindPlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.RewindPlanRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -114,6 +115,7 @@ func RewindPlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err = db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:    auth.OrgId,

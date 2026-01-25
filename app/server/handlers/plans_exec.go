@@ -46,6 +46,10 @@ func TellPlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() {
+		log.Println("Closing request body")
+		r.Body.Close()
+	}()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
@@ -53,10 +57,6 @@ func TellPlanHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer func() {
-		log.Println("Closing request body")
-		r.Body.Close()
-	}()
 
 	var requestBody shared.TellPlanRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -142,6 +142,10 @@ func BuildPlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() {
+		log.Println("Closing request body")
+		r.Body.Close()
+	}()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
@@ -149,10 +153,6 @@ func BuildPlanHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer func() {
-		log.Println("Closing request body")
-		r.Body.Close()
-	}()
 
 	var requestBody shared.BuildPlanRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -297,6 +297,7 @@ func StopPlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// this is here to ensure that the plan is stopped even if the db operation fails
 	defer func() {
@@ -364,13 +365,13 @@ func RespondMissingFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.RespondMissingFileRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -471,13 +472,13 @@ func AutoLoadContextHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.LoadContextRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {

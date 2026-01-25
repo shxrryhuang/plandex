@@ -212,6 +212,7 @@ func loadContexts(
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var loadRes *shared.LoadContextResponse
 	var dbContexts []*db.Context

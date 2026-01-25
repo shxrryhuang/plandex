@@ -32,6 +32,7 @@ func ListConvoHandler(w http.ResponseWriter, r *http.Request) {
 	var convoMessages []*db.ConvoMessage
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err = db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:    auth.OrgId,
@@ -98,6 +99,7 @@ func GetPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var convoMessages []*db.ConvoMessage
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{

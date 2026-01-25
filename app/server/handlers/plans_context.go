@@ -32,6 +32,7 @@ func ListContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	var dbContexts []*db.Context
 
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{
@@ -96,6 +97,7 @@ func GetContextBodyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var dbContexts []*db.Context
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{
@@ -170,13 +172,13 @@ func LoadContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.LoadContextRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -230,13 +232,13 @@ func UpdateContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.UpdateContextRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -246,6 +248,7 @@ func UpdateContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var updateRes *shared.UpdateContextResponse
 	err = db.ExecRepoOperation(db.ExecRepoOperationParams{
@@ -345,13 +348,13 @@ func DeleteContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.DeleteContextRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -361,6 +364,7 @@ func DeleteContextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var dbContexts []*db.Context
 	var toRemove []*db.Context

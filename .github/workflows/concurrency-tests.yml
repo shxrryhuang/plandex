@@ -1,0 +1,364 @@
+# Concurrency Tests Workflow
+#
+# Dedicated pipeline for detecting race conditions, deadlocks, and
+# concurrency regressions in the Plandex server.
+#
+# Runs three jobs:
+#   1. Race detection  - go test -race on concurrency-critical packages
+#   2. Stress tests    - repeated concurrent workloads with longer timeout
+#   3. Deadlock detection - timeout-guarded tests that catch blocked goroutines
+#
+# See docs/CONCURRENCY_PATTERNS.md for the concurrency design and test matrix.
+#
+# Updated: January 2026
+#
+name: Concurrency Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'app/server/types/**'
+      - 'app/server/db/locks*.go'
+      - 'app/server/db/queue*.go'
+      - 'app/server/model/plan/activate*.go'
+      - 'app/server/model/plan/state*.go'
+      - 'app/server/model/plan/tell_stream*.go'
+      - 'app/server/model/client_stream*.go'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/server/types/**'
+      - 'app/server/db/locks*.go'
+      - 'app/server/db/queue*.go'
+      - 'app/server/model/plan/activate*.go'
+      - 'app/server/model/plan/state*.go'
+      - 'app/server/model/plan/tell_stream*.go'
+      - 'app/server/model/client_stream*.go'
+  # Allow running manually and on a weekly schedule
+  workflow_dispatch:
+  schedule:
+    # Every Sunday at 3 AM UTC (after the daily scheduled-tests run)
+    - cron: '0 3 * * 0'
+
+env:
+  GO_VERSION: '1.23'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Race Detection
+  #
+  # Runs go test -race on the packages that contain shared mutable state:
+  # types (SafeMap, ActivePlan), db (locks, queue), model/plan (activation,
+  # streaming). A race detected by the Go race detector fails the build.
+  # ---------------------------------------------------------------------------
+  race-detection:
+    name: Race Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Race detection - types package
+        run: |
+          cd app/server
+          go test -race -count=1 -timeout 120s -v ./types/... 2>&1 | tee race-types.txt
+
+      - name: Race detection - db package
+        run: |
+          cd app/server
+          go test -race -count=1 -timeout 120s -v ./db/... 2>&1 | tee race-db.txt
+
+      - name: Race detection - model/plan package
+        run: |
+          cd app/server
+          go test -race -count=1 -timeout 120s -v ./model/plan/... 2>&1 | tee race-model.txt
+
+      - name: Summarize results
+        if: always()
+        run: |
+          echo "## Race Detection Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for pkg in types db model; do
+            FILE="app/server/race-${pkg}.txt"
+            if [ ! -f "$FILE" ]; then
+              echo "| ${pkg} | skipped |" >> $GITHUB_STEP_SUMMARY
+              continue
+            fi
+
+            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
+            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
+            RACES=$(grep -c "DATA RACE" "$FILE" || echo "0")
+
+            echo "### ${pkg}" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Failed | ${FAILED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Data Races | ${RACES} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Upload race detection logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: race-detection-logs-${{ github.run_id }}
+          path: app/server/race-*.txt
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Stress Tests
+  #
+  # Runs concurrency-related tests multiple times (-count=10) under the race
+  # detector to surface intermittent races that only appear under load.
+  # Uses a longer timeout since repeated runs take more time.
+  # Targets tests with "Concurren", "Stress", "Race", or "Parallel" in name.
+  # ---------------------------------------------------------------------------
+  stress-tests:
+    name: Stress Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Stress - SafeMap concurrent operations (10 iterations)
+        run: |
+          cd app/server
+          go test -race -count=10 -timeout 300s -v \
+            -run "TestSafeMap(Concurrency|SetIfAbsent)" \
+            ./types/... 2>&1 | tee stress-safemap.txt
+
+      - name: Stress - Queue concurrent access (10 iterations)
+        run: |
+          cd app/server
+          go test -race -count=10 -timeout 300s -v \
+            -run "TestConcurrent" \
+            ./db/... 2>&1 | tee stress-queue.txt
+
+      - name: Stress - ActivePlan concurrent operations (10 iterations)
+        run: |
+          cd app/server
+          go test -race -count=10 -timeout 300s -v \
+            -run "TestActivePlan" \
+            ./types/... 2>&1 | tee stress-activeplan.txt
+
+      - name: Summarize results
+        if: always()
+        run: |
+          echo "## Stress Test Results (10 iterations each)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL_PASS=0
+          TOTAL_FAIL=0
+
+          for FILE in app/server/stress-*.txt; do
+            [ -f "$FILE" ] || continue
+            NAME=$(basename "$FILE" .txt | sed 's/stress-//')
+            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
+            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
+            TOTAL_PASS=$((TOTAL_PASS + PASSED))
+            TOTAL_FAIL=$((TOTAL_FAIL + FAILED))
+
+            echo "### ${NAME}" >> $GITHUB_STEP_SUMMARY
+            echo "Passed: ${PASSED} | Failed: ${FAILED}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Total: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed**" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TOTAL_FAIL" -gt 0 ]; then
+            echo "::error::${TOTAL_FAIL} stress test(s) failed"
+            exit 1
+          fi
+
+      - name: Upload stress test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-test-logs-${{ github.run_id }}
+          path: app/server/stress-*.txt
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Deadlock Detection
+  #
+  # Runs tests with a short timeout to catch goroutine deadlocks. Tests that
+  # involve timers, channels, or lock acquisition are the primary targets.
+  # A test that hangs past the timeout is treated as a deadlock.
+  # ---------------------------------------------------------------------------
+  deadlock-detection:
+    name: Deadlock Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Deadlock detection - timer drain tests
+        run: |
+          cd app/server
+          go test -race -count=5 -timeout 30s -v \
+            -run "TestTimer|TestNonBlocking" \
+            ./model/plan/... 2>&1 | tee deadlock-timers.txt
+
+      - name: Deadlock detection - lock and queue tests
+        run: |
+          cd app/server
+          go test -race -count=5 -timeout 30s -v \
+            -run "TestLock|TestQueue|TestBatch" \
+            ./db/... 2>&1 | tee deadlock-locks.txt
+
+      - name: Deadlock detection - channel and stream tests
+        run: |
+          cd app/server
+          go test -race -count=5 -timeout 30s -v \
+            -run "TestActivePlan|TestSubscription|TestStream" \
+            ./types/... 2>&1 | tee deadlock-streams.txt
+
+      - name: Summarize results
+        if: always()
+        run: |
+          echo "## Deadlock Detection Results (30s timeout, 5 iterations)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "A timeout here indicates a probable deadlock." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for FILE in app/server/deadlock-*.txt; do
+            [ -f "$FILE" ] || continue
+            NAME=$(basename "$FILE" .txt | sed 's/deadlock-//')
+            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
+            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
+            TIMEOUT=$(grep -c "panic: test timed out" "$FILE" || echo "0")
+
+            STATUS="pass"
+            if [ "$TIMEOUT" -gt 0 ]; then
+              STATUS="DEADLOCK DETECTED"
+            elif [ "$FAILED" -gt 0 ]; then
+              STATUS="FAILED"
+            fi
+
+            echo "### ${NAME}: ${STATUS}" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Failed | ${FAILED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Timeouts (deadlocks) | ${TIMEOUT} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Upload deadlock detection logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadlock-detection-logs-${{ github.run_id }}
+          path: app/server/deadlock-*.txt
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Notify on failure (scheduled runs only)
+  # ---------------------------------------------------------------------------
+  notify-on-failure:
+    name: Notify on Failure
+    needs: [race-detection, stress-tests, deadlock-detection]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Concurrency Tests Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Concurrency Test Failure
+
+            The weekly concurrency test run has failed. This may indicate a
+            race condition, deadlock, or concurrency regression.
+
+            **Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            **Date:** ${new Date().toISOString()}
+
+            ### What to check
+            - Download the test artifacts for detailed logs
+            - Look for \`DATA RACE\` in race detection logs
+            - Look for \`panic: test timed out\` in deadlock detection logs
+            - See \`docs/CONCURRENCY_PATTERNS.md\` Section 10 for debugging guidance
+            `;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'concurrency-test-failure'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['bug', 'concurrency-test-failure', 'automated']
+              });
+            }

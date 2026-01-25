@@ -816,9 +816,14 @@ Summarization triggered when conversation exceeds threshold
 
 ### 10.4 Concurrency Control
 
-- Database locks for plan execution
-- Heartbeat system for active plans
-- Graceful shutdown with 60s timeout for active operations
+Concurrency safety is enforced through four layers:
+
+1. **Per-Plan Operation Queue** (`db/queue.go`) - All repository operations for a plan are serialized through a per-plan queue. Writes are exclusive; reads on the same branch can batch.
+2. **Database Locks** (`db/locks.go`) - `repo_locks` table with `REPEATABLE READ` transactions and `SELECT FOR UPDATE` provides distributed coordination across server instances. Locks use a heartbeat (3s interval, 60s expiry) to prevent permanent leaks.
+3. **Active Plan Isolation** (`model/plan/activate.go`) - The `activatePlan` gate ensures only one execution runs per plan+branch, allowing `ActivePlan` fields to be accessed without per-field mutexes.
+4. **Stream Infrastructure** (`types/active_plan.go`) - Channel-based message delivery with per-subscription queues, mutex-protected buffering, and condition-variable-based consumer blocking.
+
+See `docs/CONCURRENCY_PATTERNS.md` for the full shared mutable state map, identified failure modes, debugging guide, CLI communication patterns, and testing strategy.
 
 ---
 

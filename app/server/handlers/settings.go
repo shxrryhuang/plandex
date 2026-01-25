@@ -37,6 +37,7 @@ func GetSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var settings *shared.PlanSettings
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:    auth.OrgId,
@@ -144,6 +145,7 @@ func UpdateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var commitMsg string
 

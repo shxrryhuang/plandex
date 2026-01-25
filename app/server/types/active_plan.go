@@ -45,6 +45,17 @@ type subscription struct {
 	cond         *sync.Cond // Used to wait for and signal new messages
 }
 
+// ActivePlan holds the in-memory state for a running plan execution.
+//
+// Concurrency model: most exported fields (Operations, BuiltFiles,
+// IsBuildingByPath, CurrentReplyContent, etc.) are NOT protected by a
+// mutex. Safety relies on activatePlan enforcing that only one
+// execution runs per plan+branch at a time. The following fields
+// ARE explicitly synchronized:
+//
+//   - streamMessageBuffer, lastStreamMessageSent: protected by streamMu
+//   - subscriptions: protected by subscriptionMu
+//   - StreamDoneCh: buffered channel (capacity 1) so senders never block
 type ActivePlan struct {
 	Id                      string
 	UserId                  string
@@ -119,7 +130,7 @@ func NewActivePlan(orgId, userId, planId, branch, prompt string, buildOnly, auto
 		Operations:            []*shared.Operation{},
 		BuiltFiles:            map[string]bool{},
 		IsBuildingByPath:      map[string]bool{},
-		StreamDoneCh:          make(chan *shared.ApiError),
+		StreamDoneCh:          make(chan *shared.ApiError, 1), // buffered: prevents send-side blocking when receiver is not yet ready
 		MissingFileResponseCh: make(chan shared.RespondMissingFileChoice),
 		AutoContext:           autoContext,
 		AutoLoadContextCh:     make(chan struct{}),

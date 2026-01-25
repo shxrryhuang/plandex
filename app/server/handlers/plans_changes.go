@@ -35,10 +35,8 @@ func CurrentPlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Just in case this was sent immediately after a stream finished, wait a little before locking to allow for cleanup
-	time.Sleep(100 * time.Millisecond)
-
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	scope := db.LockScopeRead
 	if sha != "" {
 		scope = db.LockScopeWrite
@@ -124,13 +122,13 @@ func ApplyPlanHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	// read the request body
+	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body: %v\n", err)
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
-	defer r.Body.Close()
 
 	var requestBody shared.ApplyPlanRequest
 	if err := json.Unmarshal(body, &requestBody); err != nil {
@@ -139,10 +137,8 @@ func ApplyPlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Just in case this was sent immediately after a stream finished, wait a little before locking to allow for cleanup
-	time.Sleep(100 * time.Millisecond)
-
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var settings *shared.PlanSettings
 	var currentPlanParams db.CurrentPlanStateParams
@@ -266,6 +262,7 @@ func RejectAllChangesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:          auth.OrgId,
@@ -326,6 +323,7 @@ func RejectFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err = db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:          auth.OrgId,
@@ -386,6 +384,7 @@ func RejectFilesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	err = db.ExecRepoOperation(db.ExecRepoOperationParams{
 		OrgId:          auth.OrgId,
@@ -545,6 +544,7 @@ func GetPlanDiffsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	var diffs string
 
 	err := db.ExecRepoOperation(db.ExecRepoOperationParams{

@@ -22,11 +22,20 @@ func GetActivePlan(planId, branch string) *types.ActivePlan {
 	return activePlans.Get(strings.Join([]string{planId, branch}, "|"))
 }
 
+// CreateActivePlan atomically creates and registers a new ActivePlan for the
+// given plan+branch. If another goroutine already registered an ActivePlan for
+// the same key, the newly created plan is canceled and nil is returned.
 func CreateActivePlan(orgId, userId, planId, branch, prompt string, buildOnly, autoContext bool, sessionId string) *types.ActivePlan {
 	activePlan := types.NewActivePlan(orgId, userId, planId, branch, prompt, buildOnly, autoContext, sessionId)
 	key := strings.Join([]string{planId, branch}, "|")
 
-	activePlans.Set(key, activePlan)
+	if _, loaded := activePlans.SetIfAbsent(key, activePlan); loaded {
+		// Another goroutine registered a plan for this key first. Cancel the
+		// plan we just created so its resources (contexts, goroutines) are
+		// cleaned up, and return nil to signal the race was lost.
+		activePlan.CancelFn()
+		return nil
+	}
 
 	go func() {
 		for {

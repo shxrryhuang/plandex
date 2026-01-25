@@ -7,7 +7,6 @@ import (
 	"plandex-server/host"
 	"plandex-server/model"
 	"plandex-server/types"
-	"time"
 
 	shared "plandex-shared"
 )
@@ -24,17 +23,8 @@ func activatePlan(
 ) (*types.ActivePlan, error) {
 	log.Printf("Activate plan: plan ID %s on branch %s\n", plan.Id, branch)
 
-	// Just in case this request was made immediately after another stream finished, wait a little to allow for cleanup
-	log.Println("Waiting 100ms before checking for active plan")
-	time.Sleep(100 * time.Millisecond)
-	log.Println("Done waiting, checking for active plan")
-
-	active := GetActivePlan(plan.Id, branch)
-	if active != nil {
-		log.Printf("Tell: Active plan found for plan ID %s on branch %s\n", plan.Id, branch) // Log if an active plan is found
-		return nil, fmt.Errorf("plan %s branch %s already has an active stream on this host", plan.Id, branch)
-	}
-
+	// Check for an active model stream in the database first. This is needed
+	// for multi-instance coordination (another server may own the stream).
 	modelStream, err := db.GetActiveModelStream(plan.Id, branch)
 	if err != nil {
 		log.Printf("Error getting active model stream: %v\n", err)
@@ -42,11 +32,14 @@ func activatePlan(
 	}
 
 	if modelStream != nil {
-		log.Printf("Tell: Active model stream found for plan ID %s on branch %s on host %s\n", plan.Id, branch, modelStream.InternalIp) // Log if an active model stream is found
-		return nil, fmt.Errorf("plan %s branch %s already has an active stream on host %s", plan.Id, branch, modelStream.InternalIp)
+		log.Printf("Tell: Active model stream found for plan ID %s on branch %s on host %s\n", plan.Id, branch, modelStream.InternalIp)
+		return nil, fmt.Errorf("plan %s branch %s already has an active stream on host %s. Use 'plandex connect' to attach or 'plandex stop' to cancel", plan.Id, branch, modelStream.InternalIp)
 	}
 
-	active = CreateActivePlan(
+	// Atomically register the active plan. SetIfAbsent inside
+	// CreateActivePlan ensures only one goroutine wins if two
+	// concurrent tell/build requests race on the same plan+branch.
+	active := CreateActivePlan(
 		auth.OrgId,
 		auth.User.Id,
 		plan.Id,
@@ -56,6 +49,11 @@ func activatePlan(
 		autoContext,
 		sessionId,
 	)
+
+	if active == nil {
+		log.Printf("Tell: Active plan already registered for plan ID %s on branch %s\n", plan.Id, branch)
+		return nil, fmt.Errorf("plan %s branch %s already has an active stream on this host. Use 'plandex connect' to attach or 'plandex stop' to cancel", plan.Id, branch)
+	}
 
 	modelStream = &db.ModelStream{
 		OrgId:      auth.OrgId,

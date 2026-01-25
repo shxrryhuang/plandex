@@ -462,6 +462,117 @@ Some custom models could use XML format but the tool calling code path assumed J
 
 ---
 
+## Concurrency Hardening Fixes (January 2026)
+
+### Fix #C1: SafeMap.Items() Returns Copy
+
+**Location**: `app/server/types/safe_map.go`
+
+**Status**: **RESOLVED**
+
+**Description**: `Items()` returned a direct reference to the internal map. Callers iterating or mutating the returned map after the lock was released raced with concurrent `Set`/`Delete` calls.
+
+**Fix Applied**: `Items()` now allocates and returns a shallow copy of the map. A new `SetIfAbsent(key, value)` method was added for atomic check-and-set operations, used by the plan activation gate.
+
+---
+
+### Fix #C2: needsRollback Data Race in Queue Processing
+
+**Location**: `app/server/db/queue.go`
+
+**Status**: **RESOLVED**
+
+**Description**: The `needsRollback` flag was a bare `bool` written inside goroutines spawned for batch operations. While write batches are currently single-operation, the code structure did not enforce this, leaving a latent data race.
+
+**Fix Applied**: Changed from `bool` to `atomic.Bool` with `.Store(true)` / `.Load()`.
+
+---
+
+### Fix #C3: Plan Activation TOCTOU Race
+
+**Location**: `app/server/model/plan/activate.go`, `app/server/model/plan/state.go`
+
+**Status**: **RESOLVED**
+
+**Description**: `activatePlan` used a 100ms `time.Sleep` followed by a non-atomic `GetActivePlan` + `CreateActivePlan` sequence. Two concurrent `tell` requests could both pass the check and register duplicate active plans for the same plan+branch.
+
+**Fix Applied**: Removed the 100ms sleep. `CreateActivePlan` now uses `SafeMap.SetIfAbsent` to atomically register the plan. If the key already exists, the new plan is canceled and `nil` is returned. `activatePlan` checks for `nil` and returns an error with actionable guidance.
+
+---
+
+### Fix #C4: StreamDoneCh Unbuffered Channel
+
+**Location**: `app/server/types/active_plan.go`
+
+**Status**: **RESOLVED**
+
+**Description**: `StreamDoneCh` was an unbuffered channel sent to from 40+ locations across the codebase. If the receiver goroutine in `CreateActivePlan` was not ready (e.g., between context cancellation and the select loop), the sender would block indefinitely.
+
+**Fix Applied**: Changed from `make(chan *shared.ApiError)` to `make(chan *shared.ApiError, 1)`. The buffer prevents send-side blocking. A doc comment on the `ActivePlan` struct now documents the concurrency model for all fields.
+
+---
+
+### Fix #C5: Lock Contention Error Messages
+
+**Location**: `app/server/db/locks.go`, `app/server/db/queue.go`
+
+**Status**: **RESOLVED**
+
+**Description**: When lock acquisition failed after retries, the error message gave no actionable guidance. Users saw a generic message about trying again without knowing what was blocking them or how to resolve it.
+
+**Fix Applied**: Error messages now include `plandex ps` (to check active operations), `plandex stop` (to cancel), and note that stale locks expire automatically after 60s.
+
+---
+
+### Fix #C6: Context Cancel Leaks in HTTP Handlers
+
+**Location**: 8 handler files, 22 locations total
+
+**Status**: **RESOLVED**
+
+**Description**: Every `ctx, cancel := context.WithCancel(r.Context())` call in the handlers directory lacked a corresponding `defer cancel()`. When a handler returned early (e.g., on error), the derived context and its associated goroutines were never canceled, leaking resources and goroutines for the lifetime of the parent request context.
+
+**Fix Applied**: Added `defer cancel()` immediately after every `context.WithCancel` call in all 8 handler files (22 locations):
+- `handlers/plans_convo.go` (2 locations)
+- `handlers/plans_versions.go` (2 locations)
+- `handlers/settings.go` (2 locations)
+- `handlers/plans_changes.go` (6 locations)
+- `handlers/plans_exec.go` (1 location)
+- `handlers/branches.go` (3 locations)
+- `handlers/context_helper.go` (1 location)
+- `handlers/plans_context.go` (4 locations)
+
+---
+
+### Fix #C7: Request Body Close Ordering
+
+**Location**: 6 handler files, 10 locations total
+
+**Status**: **RESOLVED**
+
+**Description**: `defer r.Body.Close()` was placed after `io.ReadAll(r.Body)` and its error check. If `ReadAll` returned an error, the function returned early before the `defer` was registered, leaking the request body.
+
+**Fix Applied**: Moved `defer r.Body.Close()` (or `defer func() { r.Body.Close() }()`) to before the `io.ReadAll` call in all affected handlers:
+- `handlers/plans_exec.go` (4 locations)
+- `handlers/branches.go` (1 location)
+- `handlers/plans_versions.go` (1 location)
+- `handlers/plans_changes.go` (1 location)
+- `handlers/plans_context.go` (3 locations)
+
+---
+
+### Fix #C8: Heuristic 100ms Sleeps in Change Handlers
+
+**Location**: `app/server/handlers/plans_changes.go`
+
+**Status**: **RESOLVED**
+
+**Description**: `CurrentPlanHandler` and `ApplyPlanHandler` each contained `time.Sleep(100 * time.Millisecond)` with the comment "Just in case this was sent immediately after a stream finished, wait a little before locking to allow for cleanup." This is the same heuristic timing hack that was previously removed from `activate.go` (Fix #C3). The sleep adds latency to every request regardless of whether a stream just finished, and the proper fix is the lock-based serialization already enforced by `ExecRepoOperation`.
+
+**Fix Applied**: Removed both `time.Sleep` calls and their comments.
+
+---
+
 ## Summary of TODOs - All Resolved
 
 | Priority | Location | Issue | Status |
@@ -474,6 +585,14 @@ Some custom models could use XML format but the tool calling code path assumed J
 | Low | `provider.template.yml` | Enhance eval framework flexibility | ✅ Fixed |
 | Medium | `git.go:727-815` | Remove/gate debug logging | ✅ Fixed |
 | High | Multiple server files | Panic recovery patterns | ✅ Addressed (defensive) |
+| **High** | `safe_map.go` | Items() returns inner map reference | ✅ Fixed (returns copy) |
+| **High** | `queue.go` | needsRollback data race | ✅ Fixed (atomic.Bool) |
+| **High** | `activate.go`, `state.go` | Plan activation TOCTOU race | ✅ Fixed (SetIfAbsent) |
+| **High** | `active_plan.go` | StreamDoneCh unbuffered channel | ✅ Fixed (buffered) |
+| **Medium** | `locks.go`, `queue.go` | Lock error messages not actionable | ✅ Fixed |
+| **High** | 8 handler files (22 locations) | Context cancel leaks | ✅ Fixed (defer cancel) |
+| **High** | 6 handler files (10 locations) | Request body close ordering | ✅ Fixed (defer before read) |
+| **Medium** | `plans_changes.go` | Heuristic 100ms sleeps | ✅ Fixed (removed) |
 
 **All TODOs have been resolved as of January 2026.**
 

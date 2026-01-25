@@ -111,7 +111,7 @@ func TestSafeMapBasicOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("items returns all items", func(t *testing.T) {
+	t.Run("items returns all items as a copy", func(t *testing.T) {
 		sm := NewSafeMap[int]()
 		sm.Set("a", 1)
 		sm.Set("b", 2)
@@ -122,6 +122,16 @@ func TestSafeMapBasicOperations(t *testing.T) {
 		}
 		if items["a"] != 1 || items["b"] != 2 {
 			t.Errorf("items mismatch: %v", items)
+		}
+
+		// Mutating the returned map must not affect the SafeMap.
+		items["c"] = 3
+		delete(items, "a")
+		if sm.Len() != 2 {
+			t.Errorf("expected SafeMap length 2 after mutating copy, got %d", sm.Len())
+		}
+		if sm.Get("a") != 1 {
+			t.Errorf("expected SafeMap key 'a' to still be 1 after mutating copy")
 		}
 	})
 }
@@ -155,6 +165,69 @@ func TestSafeMapUpdate(t *testing.T) {
 
 		if called {
 			t.Error("update function should not be called for nonexistent key")
+		}
+	})
+}
+
+// TestSafeMapSetIfAbsent tests the atomic SetIfAbsent method
+func TestSafeMapSetIfAbsent(t *testing.T) {
+	t.Run("sets value when key is absent", func(t *testing.T) {
+		sm := NewSafeMap[int]()
+
+		existing, loaded := sm.SetIfAbsent("key", 42)
+		if loaded {
+			t.Error("expected loaded=false for absent key")
+		}
+		if existing != 0 {
+			t.Errorf("expected zero value for absent key, got %d", existing)
+		}
+		if sm.Get("key") != 42 {
+			t.Errorf("expected key to be set to 42, got %d", sm.Get("key"))
+		}
+	})
+
+	t.Run("does not overwrite when key is present", func(t *testing.T) {
+		sm := NewSafeMap[int]()
+		sm.Set("key", 10)
+
+		existing, loaded := sm.SetIfAbsent("key", 99)
+		if !loaded {
+			t.Error("expected loaded=true for present key")
+		}
+		if existing != 10 {
+			t.Errorf("expected existing value 10, got %d", existing)
+		}
+		if sm.Get("key") != 10 {
+			t.Errorf("expected key to remain 10, got %d", sm.Get("key"))
+		}
+	})
+
+	t.Run("concurrent race: exactly one goroutine wins", func(t *testing.T) {
+		sm := NewSafeMap[int]()
+		numGoroutines := 100
+		var wg sync.WaitGroup
+		wins := make(chan int, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				_, loaded := sm.SetIfAbsent("race-key", id)
+				if !loaded {
+					wins <- id
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(wins)
+
+		winCount := 0
+		for range wins {
+			winCount++
+		}
+		if winCount != 1 {
+			t.Errorf("expected exactly 1 winner, got %d", winCount)
 		}
 	})
 }

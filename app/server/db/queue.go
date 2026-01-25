@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -207,7 +208,7 @@ func (q *repoQueue) runQueue() {
 					if locksVerboseLogging {
 						log.Printf("[Queue] Notifying operation %s (%s) of lock failure", op.id, op.reason)
 					}
-					op.done <- fmt.Errorf("failed to get DB lock for operation '%s': %w. This may be due to another active operation on this plan or a database connectivity issue", op.reason, err)
+					op.done <- fmt.Errorf("failed to get DB lock for operation '%s': %w. Another operation is modifying this plan. Use 'plandex ps' to see active operations or 'plandex stop' to cancel. Stale locks expire automatically after 60s", op.reason, err)
 				}
 				// we still need to process the rest of the queue
 				// if the error is critical, caller will handle it
@@ -219,7 +220,7 @@ func (q *repoQueue) runQueue() {
 			}
 
 			repo := getGitRepo(firstOp.orgId, firstOp.planId)
-			var needsRollback bool
+			var needsRollback atomic.Bool
 
 			// Process the batch
 			// If it's a writer => single op
@@ -257,7 +258,7 @@ func (q *repoQueue) runQueue() {
 										log.Printf("[Queue] Operation %s (%s) failed with error, marking for rollback: %v",
 											op.id, op.reason, opErr)
 									}
-									needsRollback = true
+									needsRollback.Store(true)
 								}
 							}()
 
@@ -284,7 +285,7 @@ func (q *repoQueue) runQueue() {
 			}
 			wg.Wait()
 
-			if needsRollback {
+			if needsRollback.Load() {
 				log.Printf("[Queue] Performing rollback for plan %s branch %s", firstOp.planId, firstOp.branch)
 				rollbackErr := repo.GitClearUncommittedChanges(firstOp.branch)
 				if rollbackErr != nil {
