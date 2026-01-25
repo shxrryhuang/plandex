@@ -816,14 +816,20 @@ Summarization triggered when conversation exceeds threshold
 
 ### 10.4 Concurrency Control
 
-Concurrency safety is enforced through four layers:
+- Database locks for plan execution
+- Heartbeat system for active plans (3s interval, 60s timeout)
+- Graceful shutdown with 60s timeout for active operations
+- Queue-based operation batching (same-branch reads batched, writes exclusive)
+- Exponential backoff retry (6 attempts, 300ms initial, 2x factor, ±30% jitter)
 
-1. **Per-Plan Operation Queue** (`db/queue.go`) - All repository operations for a plan are serialized through a per-plan queue. Writes are exclusive; reads on the same branch can batch.
-2. **Database Locks** (`db/locks.go`) - `repo_locks` table with `REPEATABLE READ` transactions and `SELECT FOR UPDATE` provides distributed coordination across server instances. Locks use a heartbeat (3s interval, 60s expiry) to prevent permanent leaks.
-3. **Active Plan Isolation** (`model/plan/activate.go`) - The `activatePlan` gate ensures only one execution runs per plan+branch, allowing `ActivePlan` fields to be accessed without per-field mutexes.
-4. **Stream Infrastructure** (`types/active_plan.go`) - Channel-based message delivery with per-subscription queues, mutex-protected buffering, and condition-variable-based consumer blocking.
+**Diagnostic Tools:**
+- `plandex doctor` - Check for stale locks and system health
+- `plandex doctor --fix` - Automatically clean up stale locks
+- `plandex ps` - View active operations
 
-See `docs/CONCURRENCY_PATTERNS.md` for the full shared mutable state map, identified failure modes, debugging guide, CLI communication patterns, and testing strategy.
+> **For detailed concurrency documentation, see:**
+> - [CONCURRENCY_SAFETY.md](./CONCURRENCY_SAFETY.md) - Failure modes, debugging, testing
+> - [CONCURRENCY_PATTERNS.md](./CONCURRENCY_PATTERNS.md) - Code-level patterns
 
 ---
 

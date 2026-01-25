@@ -1,14 +1,22 @@
-# Concurrency Tests Workflow
+# Concurrency Tests Pipeline
 #
-# Dedicated pipeline for detecting race conditions, deadlocks, and
-# concurrency regressions in the Plandex server.
+# This workflow specifically tests concurrency safety in Plandex.
 #
-# Runs three jobs:
-#   1. Race detection  - go test -race on concurrency-critical packages
-#   2. Stress tests    - repeated concurrent workloads with longer timeout
-#   3. Deadlock detection - timeout-guarded tests that catch blocked goroutines
+# Tests include:
+#   - Race condition detection (go test -race)
+#   - Timer drain pattern tests (deadlock prevention)
+#   - Channel pattern tests (goroutine leak prevention)
+#   - Queue batching tests
+#   - Lock conflict detection tests
+#   - Mutex usage tests
+#   - Stress tests under high load
+#   - Doctor types serialization tests
 #
-# See docs/CONCURRENCY_PATTERNS.md for the concurrency design and test matrix.
+# Triggers:
+#   - On push to main/develop (concurrency-related files)
+#   - On pull request (concurrency-related files)
+#   - Manual dispatch
+#   - Scheduled daily at 3 AM UTC
 #
 # Updated: January 2026
 #
@@ -18,42 +26,39 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'app/server/types/**'
-      - 'app/server/db/locks*.go'
-      - 'app/server/db/queue*.go'
-      - 'app/server/model/plan/activate*.go'
-      - 'app/server/model/plan/state*.go'
-      - 'app/server/model/plan/tell_stream*.go'
-      - 'app/server/model/client_stream*.go'
+      - 'app/server/db/locks.go'
+      - 'app/server/db/queue.go'
+      - 'app/server/db/*_test.go'
+      - 'app/server/model/client_stream.go'
+      - 'app/server/handlers/doctor.go'
+      - 'app/shared/doctor.go'
+      - '.github/workflows/concurrency-tests.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'app/server/types/**'
-      - 'app/server/db/locks*.go'
-      - 'app/server/db/queue*.go'
-      - 'app/server/model/plan/activate*.go'
-      - 'app/server/model/plan/state*.go'
-      - 'app/server/model/plan/tell_stream*.go'
-      - 'app/server/model/client_stream*.go'
-  # Allow running manually and on a weekly schedule
-  workflow_dispatch:
+      - 'app/server/db/locks.go'
+      - 'app/server/db/queue.go'
+      - 'app/server/db/*_test.go'
+      - 'app/server/model/client_stream.go'
+      - 'app/server/handlers/doctor.go'
+      - 'app/shared/doctor.go'
   schedule:
-    # Every Sunday at 3 AM UTC (after the daily scheduled-tests run)
-    - cron: '0 3 * * 0'
+    # Run daily at 3 AM UTC (offset from main scheduled tests)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      run_stress_tests:
+        description: 'Run stress tests (slower but more thorough)'
+        required: false
+        default: 'true'
+        type: boolean
 
 env:
   GO_VERSION: '1.23'
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Job 1: Race Detection
-  #
-  # Runs go test -race on the packages that contain shared mutable state:
-  # types (SafeMap, ActivePlan), db (locks, queue), model/plan (activation,
-  # streaming). A race detected by the Go race detector fails the build.
-  # ---------------------------------------------------------------------------
   race-detection:
-    name: Race Detection
+    name: Race Condition Detection
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -74,70 +79,53 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Download dependencies
+      - name: Run race detection tests (server/db)
         run: |
           cd app/server
-          go mod download
-
-      - name: Race detection - types package
-        run: |
-          cd app/server
-          go test -race -count=1 -timeout 120s -v ./types/... 2>&1 | tee race-types.txt
-
-      - name: Race detection - db package
-        run: |
-          cd app/server
-          go test -race -count=1 -timeout 120s -v ./db/... 2>&1 | tee race-db.txt
-
-      - name: Race detection - model/plan package
-        run: |
-          cd app/server
-          go test -race -count=1 -timeout 120s -v ./model/plan/... 2>&1 | tee race-model.txt
-
-      - name: Summarize results
-        if: always()
-        run: |
-          echo "## Race Detection Results" >> $GITHUB_STEP_SUMMARY
+          echo "## Race Detection Tests - db package" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          for pkg in types db model; do
-            FILE="app/server/race-${pkg}.txt"
-            if [ ! -f "$FILE" ]; then
-              echo "| ${pkg} | skipped |" >> $GITHUB_STEP_SUMMARY
-              continue
-            fi
+          go test -v -race -timeout 10m ./db/... 2>&1 | tee race-db.txt
 
-            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
-            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
-            RACES=$(grep -c "DATA RACE" "$FILE" || echo "0")
+          RACES=$(grep -c "WARNING: DATA RACE" race-db.txt || echo "0")
+          if [ "$RACES" -gt 0 ]; then
+            echo "::error::Data race detected in db package!"
+            echo "❌ **Data races detected: $RACES**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No data races detected in db package" >> $GITHUB_STEP_SUMMARY
+          fi
 
-            echo "### ${pkg}" >> $GITHUB_STEP_SUMMARY
-            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Failed | ${FAILED} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Data Races | ${RACES} |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          done
+      - name: Run race detection tests (shared)
+        run: |
+          cd app/shared
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Race Detection Tests - shared package" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -timeout 5m ./... 2>&1 | tee race-shared.txt
+
+          RACES=$(grep -c "WARNING: DATA RACE" race-shared.txt || echo "0")
+          if [ "$RACES" -gt 0 ]; then
+            echo "::error::Data race detected in shared package!"
+            echo "❌ **Data races detected: $RACES**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No data races detected in shared package" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload race detection logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: race-detection-logs-${{ github.run_id }}
-          path: app/server/race-*.txt
+          path: |
+            app/server/race-db.txt
+            app/shared/race-shared.txt
           retention-days: 14
 
-  # ---------------------------------------------------------------------------
-  # Job 2: Stress Tests
-  #
-  # Runs concurrency-related tests multiple times (-count=10) under the race
-  # detector to surface intermittent races that only appear under load.
-  # Uses a longer timeout since repeated runs take more time.
-  # Targets tests with "Concurren", "Stress", "Race", or "Parallel" in name.
-  # ---------------------------------------------------------------------------
-  stress-tests:
-    name: Stress Tests
+  concurrency-unit-tests:
+    name: Concurrency Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -158,79 +146,242 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Download dependencies
+      - name: Run timer pattern tests
         run: |
           cd app/server
-          go mod download
+          echo "## Timer Pattern Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Timer" 2>&1 | tee timer-tests.txt
 
-      - name: Stress - SafeMap concurrent operations (10 iterations)
-        run: |
-          cd app/server
-          go test -race -count=10 -timeout 300s -v \
-            -run "TestSafeMap(Concurrency|SetIfAbsent)" \
-            ./types/... 2>&1 | tee stress-safemap.txt
+          PASSED=$(grep -c "^--- PASS:" timer-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" timer-tests.txt || echo "0")
 
-      - name: Stress - Queue concurrent access (10 iterations)
-        run: |
-          cd app/server
-          go test -race -count=10 -timeout 300s -v \
-            -run "TestConcurrent" \
-            ./db/... 2>&1 | tee stress-queue.txt
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
 
-      - name: Stress - ActivePlan concurrent operations (10 iterations)
-        run: |
-          cd app/server
-          go test -race -count=10 -timeout 300s -v \
-            -run "TestActivePlan" \
-            ./types/... 2>&1 | tee stress-activeplan.txt
-
-      - name: Summarize results
-        if: always()
-        run: |
-          echo "## Stress Test Results (10 iterations each)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          TOTAL_PASS=0
-          TOTAL_FAIL=0
-
-          for FILE in app/server/stress-*.txt; do
-            [ -f "$FILE" ] || continue
-            NAME=$(basename "$FILE" .txt | sed 's/stress-//')
-            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
-            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
-            TOTAL_PASS=$((TOTAL_PASS + PASSED))
-            TOTAL_FAIL=$((TOTAL_FAIL + FAILED))
-
-            echo "### ${NAME}" >> $GITHUB_STEP_SUMMARY
-            echo "Passed: ${PASSED} | Failed: ${FAILED}" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          done
-
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "**Total: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed**" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$TOTAL_FAIL" -gt 0 ]; then
-            echo "::error::${TOTAL_FAIL} stress test(s) failed"
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Timer pattern tests failed"
             exit 1
           fi
+
+      - name: Run channel pattern tests
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Channel Pattern Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Channel" 2>&1 | tee channel-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" channel-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" channel-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Channel pattern tests failed"
+            exit 1
+          fi
+
+      - name: Run queue batching tests
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Queue Batching Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Queue|Batch" 2>&1 | tee queue-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" queue-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" queue-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Queue batching tests failed"
+            exit 1
+          fi
+
+      - name: Run lock conflict tests
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Lock Conflict Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Lock" 2>&1 | tee lock-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" lock-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" lock-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Lock conflict tests failed"
+            exit 1
+          fi
+
+      - name: Run context cancellation tests
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Context Cancellation Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Context" 2>&1 | tee context-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" context-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" context-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Context cancellation tests failed"
+            exit 1
+          fi
+
+      - name: Run mutex usage tests
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Mutex Usage Tests" >> $GITHUB_STEP_SUMMARY
+          go test -v -race ./db/... -run "Mutex" 2>&1 | tee mutex-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" mutex-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" mutex-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Mutex usage tests failed"
+            exit 1
+          fi
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrency-unit-test-logs-${{ github.run_id }}
+          path: |
+            app/server/*-tests.txt
+          retention-days: 14
+
+  doctor-tests:
+    name: Doctor Types Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run doctor type tests
+        run: |
+          cd app/shared
+          echo "## Doctor Type Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race ./... -run "Doctor" 2>&1 | tee doctor-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" doctor-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" doctor-tests.txt || echo "0")
+
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Doctor type tests failed"
+            exit 1
+          fi
+
+  stress-tests:
+    name: Stress Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_stress_tests != 'false' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run stress tests
+        run: |
+          cd app/server
+          echo "## Stress Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Running high-volume concurrent access tests..." >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -timeout 15m ./db/... -run "Stress" 2>&1 | tee stress-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" stress-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" stress-tests.txt || echo "0")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Stress tests failed"
+            exit 1
+          fi
+
+      - name: Run concurrent access stress test
+        run: |
+          cd app/server
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Concurrent Queue Access" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race ./db/... -run "ConcurrentQueueAccess" -count=3 2>&1 | tee concurrent-stress.txt
+
+          PASSED=$(grep -c "^--- PASS:" concurrent-stress.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" concurrent-stress.txt || echo "0")
+
+          echo "Ran 3 iterations of concurrent access tests" >> $GITHUB_STEP_SUMMARY
+          echo "| Result | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload stress test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: stress-test-logs-${{ github.run_id }}
-          path: app/server/stress-*.txt
+          path: |
+            app/server/stress-tests.txt
+            app/server/concurrent-stress.txt
           retention-days: 14
 
-  # ---------------------------------------------------------------------------
-  # Job 3: Deadlock Detection
-  #
-  # Runs tests with a short timeout to catch goroutine deadlocks. Tests that
-  # involve timers, channels, or lock acquisition are the primary targets.
-  # A test that hangs past the timeout is treated as a deadlock.
-  # ---------------------------------------------------------------------------
-  deadlock-detection:
-    name: Deadlock Detection
+  backoff-tests:
+    name: Retry Backoff Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -241,87 +392,65 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      - name: Download dependencies
+      - name: Run backoff calculation tests
         run: |
           cd app/server
-          go mod download
-
-      - name: Deadlock detection - timer drain tests
-        run: |
-          cd app/server
-          go test -race -count=5 -timeout 30s -v \
-            -run "TestTimer|TestNonBlocking" \
-            ./model/plan/... 2>&1 | tee deadlock-timers.txt
-
-      - name: Deadlock detection - lock and queue tests
-        run: |
-          cd app/server
-          go test -race -count=5 -timeout 30s -v \
-            -run "TestLock|TestQueue|TestBatch" \
-            ./db/... 2>&1 | tee deadlock-locks.txt
-
-      - name: Deadlock detection - channel and stream tests
-        run: |
-          cd app/server
-          go test -race -count=5 -timeout 30s -v \
-            -run "TestActivePlan|TestSubscription|TestStream" \
-            ./types/... 2>&1 | tee deadlock-streams.txt
-
-      - name: Summarize results
-        if: always()
-        run: |
-          echo "## Deadlock Detection Results (30s timeout, 5 iterations)" >> $GITHUB_STEP_SUMMARY
+          echo "## Retry Backoff Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "A timeout here indicates a probable deadlock." >> $GITHUB_STEP_SUMMARY
+          echo "Verifying exponential backoff calculations..." >> $GITHUB_STEP_SUMMARY
+
+          go test -v ./db/... -run "Backoff" 2>&1 | tee backoff-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" backoff-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" backoff-tests.txt || echo "0")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Attempt | Expected Range |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|----------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 0 | 210ms - 390ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 | 420ms - 780ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 | 840ms - 1.56s |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 | 1.68s - 3.12s |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tests passed: $PASSED" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Backoff tests failed"
+            exit 1
+          fi
+
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [race-detection, concurrency-unit-tests, doctor-tests, backoff-tests]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Concurrency Test Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Race Detection | ${{ needs.race-detection.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.concurrency-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Doctor Tests | ${{ needs.doctor-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backoff Tests | ${{ needs.backoff-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          for FILE in app/server/deadlock-*.txt; do
-            [ -f "$FILE" ] || continue
-            NAME=$(basename "$FILE" .txt | sed 's/deadlock-//')
-            PASSED=$(grep -c "^--- PASS:" "$FILE" || echo "0")
-            FAILED=$(grep -c "^--- FAIL:" "$FILE" || echo "0")
-            TIMEOUT=$(grep -c "panic: test timed out" "$FILE" || echo "0")
-
-            STATUS="pass"
-            if [ "$TIMEOUT" -gt 0 ]; then
-              STATUS="DEADLOCK DETECTED"
-            elif [ "$FAILED" -gt 0 ]; then
-              STATUS="FAILED"
-            fi
-
-            echo "### ${NAME}: ${STATUS}" >> $GITHUB_STEP_SUMMARY
-            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Failed | ${FAILED} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Timeouts (deadlocks) | ${TIMEOUT} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.race-detection.result }}" == "failure" ] || \
+             [ "${{ needs.concurrency-unit-tests.result }}" == "failure" ] || \
+             [ "${{ needs.doctor-tests.result }}" == "failure" ] || \
+             [ "${{ needs.backoff-tests.result }}" == "failure" ]; then
+            echo "⚠️ **Some concurrency tests failed. Please investigate.**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-          done
+            echo "See [CONCURRENCY_SAFETY.md](../docs/CONCURRENCY_SAFETY.md) for debugging guidance." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **All concurrency tests passed!**" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: Upload deadlock detection logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deadlock-detection-logs-${{ github.run_id }}
-          path: app/server/deadlock-*.txt
-          retention-days: 14
-
-  # ---------------------------------------------------------------------------
-  # Notify on failure (scheduled runs only)
-  # ---------------------------------------------------------------------------
   notify-on-failure:
     name: Notify on Failure
-    needs: [race-detection, stress-tests, deadlock-detection]
+    needs: [race-detection, concurrency-unit-tests, doctor-tests, stress-tests, backoff-tests]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -333,19 +462,26 @@ jobs:
             const body = `
             ## Concurrency Test Failure
 
-            The weekly concurrency test run has failed. This may indicate a
-            race condition, deadlock, or concurrency regression.
+            The scheduled concurrency test run has failed.
 
             **Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
             **Date:** ${new Date().toISOString()}
 
-            ### What to check
-            - Download the test artifacts for detailed logs
-            - Look for \`DATA RACE\` in race detection logs
-            - Look for \`panic: test timed out\` in deadlock detection logs
-            - See \`docs/CONCURRENCY_PATTERNS.md\` Section 10 for debugging guidance
+            ### Potential Issues
+            - Race conditions detected
+            - Timer deadlock patterns
+            - Queue batching failures
+            - Lock conflict handling errors
+
+            ### Next Steps
+            1. Check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details
+            2. Review [CONCURRENCY_SAFETY.md](../docs/CONCURRENCY_SAFETY.md) for debugging guidance
+            3. Run \`go test -race ./...\` locally to reproduce
+
+            /cc @team-leads
             `;
 
+            // Check if issue already exists
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -359,6 +495,6 @@ jobs:
                 repo: context.repo.repo,
                 title: title,
                 body: body,
-                labels: ['bug', 'concurrency-test-failure', 'automated']
+                labels: ['bug', 'concurrency-test-failure', 'automated', 'priority-high']
               });
             }

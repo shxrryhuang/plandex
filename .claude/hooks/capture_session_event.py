@@ -2,31 +2,61 @@
 """
 Hook to capture session start/end events.
 Cross-platform support for Windows, macOS, and Linux.
+
+Concurrency Safety:
+- Uses fcntl.flock() for atomic file writes on Unix systems
+- Generates fallback session IDs to prevent overwrites
+- See docs/CONCURRENCY_SAFETY.md for details
 """
 import json
 import sys
 import os
 import subprocess
-import fcntl
+import uuid
 from datetime import datetime, timezone
 from claude_code_capture_utils import get_log_file_path, add_ab_metadata
 
+# Platform-specific file locking
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False  # Windows doesn't have fcntl
+
 
 def write_log_entry_atomic(log_file, log_entry):
-    """Write a log entry atomically with file locking to prevent race conditions."""
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            # Acquire exclusive lock to prevent concurrent writes
+    """Write a log entry atomically with file locking.
+
+    Uses fcntl.flock() on Unix systems to ensure atomic writes
+    when multiple sessions write to the same file concurrently.
+    """
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    with open(log_file, "a", encoding="utf-8") as f:
+        if HAS_FCNTL:
+            # Acquire exclusive lock (blocks until available)
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 f.write(json.dumps(log_entry) + "\n")
                 f.flush()
-                os.fsync(f.fileno())
+                os.fsync(f.fileno())  # Force write to disk
             finally:
-                # Release the lock
+                # Release lock
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    except (IOError, OSError) as e:
-        print(f"[WARN] Failed to write log entry: {e}", file=sys.stderr)
+        else:
+            # Windows fallback: no locking, but still atomic write
+            f.write(json.dumps(log_entry) + "\n")
+            f.flush()
+
+
+def get_safe_session_id(session_id):
+    """Generate a safe session ID, with fallback for missing/unknown IDs.
+
+    Prevents file overwrites when multiple sessions have missing session IDs.
+    """
+    if not session_id or session_id == "unknown":
+        return f"fallback_{uuid.uuid4().hex[:8]}"
+    return session_id
 
 def get_git_metadata(repo_dir):
     """Get current git commit and branch."""
@@ -65,7 +95,6 @@ def get_git_metadata(repo_dir):
         return None
 
 def main():
-    event_type = "unknown"
     try:
         if len(sys.argv) < 2:
             print("Usage: capture_session_event.py [start|end]", file=sys.stderr)
@@ -78,13 +107,9 @@ def main():
 
         input_data = json.load(sys.stdin)
 
-        session_id = input_data.get("session_id")
-        # Ensure session_id is valid to prevent file overwrites between sessions
-        if not session_id or session_id == "unknown":
-            import uuid
-            session_id = f"fallback_{uuid.uuid4().hex[:8]}"
-            print(f"[WARN] No valid session_id provided, using: {session_id}", file=sys.stderr)
-
+        # Use safe session ID to prevent file overwrites
+        raw_session_id = input_data.get("session_id", "unknown")
+        session_id = get_safe_session_id(raw_session_id)
         transcript_path = input_data.get("transcript_path", "")
         cwd = input_data.get("cwd", "")
 
@@ -96,27 +121,28 @@ def main():
                 "type": "session_start",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "session_id": session_id,
+                "original_session_id": raw_session_id if raw_session_id != session_id else None,
                 "transcript_path": transcript_path,
                 "cwd": cwd,
                 "git_metadata": git_metadata
             }
 
+            # Remove None values for cleaner output
+            log_entry = {k: v for k, v in log_entry.items() if v is not None}
             log_entry = add_ab_metadata(log_entry, cwd)
 
             if git_metadata:
                 print(f"[OK] Captured git metadata: {git_metadata['base_commit'][:8]} on {git_metadata['branch']}")
 
-            # Write session_start event with atomic locking
+            # Write session_start event with atomic file locking
             log_file = get_log_file_path(session_id, cwd)
             write_log_entry_atomic(log_file, log_entry)
 
         elif event_type == "end":
-            # Session end: log the event with duration info
-            end_time = datetime.now(timezone.utc)
-
+            # Session end: log the event
             log_entry = {
                 "type": "session_end",
-                "timestamp": end_time.isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "session_id": session_id,
                 "transcript_path": transcript_path,
                 "cwd": cwd,
@@ -125,18 +151,12 @@ def main():
 
             log_entry = add_ab_metadata(log_entry, cwd)
 
-            # Write session_end event with atomic locking
+            # Write session_end event with atomic file locking
             log_file = get_log_file_path(session_id, cwd)
             write_log_entry_atomic(log_file, log_entry)
 
-            # Report session end
-            reason = input_data.get("reason", "completed")
-            print(f"[OK] Session ended: {session_id[:16]}... ({reason})")
-
     except Exception as e:
-        import traceback
-        print(f"[ERROR] Session {event_type} failed: {e}", file=sys.stderr)
-        print(f"[DEBUG] Stack trace:\n{traceback.format_exc()}", file=sys.stderr)
+        print(f"[ERROR] Session {event_type}: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

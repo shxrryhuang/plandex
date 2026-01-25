@@ -2452,3 +2452,37 @@ func (a *Api) GetBuildStatus(planId, branch string) (*shared.GetBuildStatusRespo
 
 	return &respBody, nil
 }
+
+// Doctor runs system health diagnostics including concurrency checks
+func (a *Api) Doctor(req shared.DoctorRequest) (*shared.DoctorResponse, *shared.ApiError) {
+	serverUrl := fmt.Sprintf("%s/doctor", GetApiHost())
+
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, &shared.ApiError{Type: shared.ApiErrorTypeOther, Msg: fmt.Sprintf("error marshalling request: %v", err)}
+	}
+
+	resp, err := authenticatedFastClient.Post(serverUrl, "application/json", bytes.NewBuffer(reqBytes))
+	if err != nil {
+		return nil, &shared.ApiError{Type: shared.ApiErrorTypeOther, Msg: fmt.Sprintf("error sending request: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		errorBody, _ := io.ReadAll(resp.Body)
+		apiErr := HandleApiError(resp, errorBody)
+		authRefreshed, apiErr := refreshAuthIfNeeded(apiErr)
+		if authRefreshed {
+			return a.Doctor(req)
+		}
+		return nil, apiErr
+	}
+
+	var respBody shared.DoctorResponse
+	err = json.NewDecoder(resp.Body).Decode(&respBody)
+	if err != nil {
+		return nil, &shared.ApiError{Type: shared.ApiErrorTypeOther, Msg: fmt.Sprintf("error decoding response: %v", err)}
+	}
+
+	return &respBody, nil
+}

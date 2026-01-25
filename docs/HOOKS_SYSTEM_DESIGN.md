@@ -1,7 +1,13 @@
 # Hooks System Design Document
 
-**Version:** 1.0
+**Version:** 1.1
 **Last Updated:** January 2026
+
+---
+
+> **Related Documentation:**
+> - [CONCURRENCY_SAFETY.md](./CONCURRENCY_SAFETY.md) - Comprehensive concurrency safety guide
+> - [CONCURRENCY_PATTERNS.md](./CONCURRENCY_PATTERNS.md) - Code-level concurrency patterns
 
 ---
 
@@ -135,12 +141,17 @@ The hooks system provides event capture and logging capabilities for Claude Code
 
 ### 3.3 Session ID Fallback
 
-To prevent file overwrites between sessions with missing IDs:
+To prevent file overwrites between sessions with missing IDs, the `get_safe_session_id()` function generates unique fallback IDs:
 
 ```python
-if not session_id or session_id == "unknown":
-    session_id = f"fallback_{uuid.uuid4().hex[:8]}"
+def get_safe_session_id(session_id):
+    """Generate a safe session ID, with fallback for missing/unknown IDs."""
+    if not session_id or session_id == "unknown":
+        return f"fallback_{uuid.uuid4().hex[:8]}"
+    return session_id
 ```
+
+When a fallback ID is used, the original session ID is preserved in the log entry as `original_session_id` for debugging purposes.
 
 ---
 
@@ -155,20 +166,32 @@ Multiple concurrent sessions or processes may attempt to write to log files simu
 
 ### 4.2 Solution: Atomic Writes with File Locking
 
+The `write_log_entry_atomic()` function in `capture_session_event.py` implements platform-aware file locking:
+
 ```python
 def write_log_entry_atomic(log_file, log_entry):
     """Write a log entry atomically with file locking."""
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
     with open(log_file, "a", encoding="utf-8") as f:
-        # Acquire exclusive lock
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
+        if HAS_FCNTL:  # Unix systems (macOS, Linux)
+            # Acquire exclusive lock (blocks until available)
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(log_entry) + "\n")
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
+            finally:
+                # Release lock
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        else:  # Windows fallback
             f.write(json.dumps(log_entry) + "\n")
             f.flush()
-            os.fsync(f.fileno())  # Force write to disk
-        finally:
-            # Release lock
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 ```
+
+**Platform Support:**
+- **macOS/Linux:** Full fcntl-based file locking
+- **Windows:** Graceful fallback without locking (concurrent write risk remains)
 
 ### 4.3 Lock Guarantees
 
