@@ -46,7 +46,7 @@ func GetWorkspaceProjectPaths(baseDir string, ws *workspace.Workspace) (*types.P
 		ActiveDirs:     make(map[string]bool),
 		AllDirs:        make(map[string]bool),
 		PlandexIgnored: originalPaths.PlandexIgnored,
-		IgnoredPaths:   make(map[string]types.IgnoredPath),
+		IgnoredPaths:   make(map[string]string),
 		GitIgnoredDirs: originalPaths.GitIgnoredDirs,
 	}
 
