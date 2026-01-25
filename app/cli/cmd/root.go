@@ -3,14 +3,20 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"plandex-cli/fs"
 	"plandex-cli/term"
+	"path/filepath"
 	"strings"
+
+	shared "plandex-shared"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
 var helpShowAll bool
+var debugMode bool
+var debugLevel string
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
@@ -18,6 +24,18 @@ var RootCmd = &cobra.Command{
 	// Short: "Plandex: iterative development with AI",
 	SilenceErrors: true,
 	SilenceUsage:  true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Enable debug mode if --debug flag is set
+		if debugMode && !shared.IsDebugEnabled() {
+			level := shared.ParseDebugLevel(debugLevel)
+			traceFile := filepath.Join(fs.HomePlandexDir, "debug_traces.log")
+			if err := shared.EnableDebugMode(level, traceFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to enable debug mode: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Debug mode enabled (level: %s)\n", level.String())
+			}
+		}
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		run(cmd, args)
 	},
@@ -90,4 +108,8 @@ func init() {
 
 	// add an --all/-a flag
 	helpCmd.Flags().BoolVarP(&helpShowAll, "all", "a", false, "Show all commands")
+
+	// Add global debug flags
+	RootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "Enable debug mode for detailed tracing")
+	RootCmd.PersistentFlags().StringVar(&debugLevel, "debug-level", "debug", "Debug verbosity level (info, debug, trace)")
 }

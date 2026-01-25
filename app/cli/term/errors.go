@@ -11,6 +11,15 @@ import (
 	"github.com/fatih/color"
 )
 
+// recordError stores an error in the global registry if available
+func recordError(category shared.ErrorCategory, errType, code, message string) string {
+	if shared.GlobalErrorRegistry == nil {
+		return ""
+	}
+	report := shared.NewErrorReport(category, errType, code, message)
+	return shared.StoreError(report)
+}
+
 var openUnauthenticatedCloudURL func(msg, path string)
 var openAuthenticatedURL func(msg, path string)
 var convertTrial func()
@@ -27,6 +36,8 @@ func SetConvertTrialFn(fn func()) {
 
 func OutputSimpleError(msg string, args ...interface{}) {
 	msg = fmt.Sprintf(msg, args...)
+	// Record error for diagnostics
+	recordError(shared.ErrorCategoryInternal, "simple_error", "SIMPLE_ERROR", msg)
 	fmt.Fprintln(os.Stderr, color.New(ColorHiRed, color.Bold).Sprint("🚨 "+shared.Capitalize(msg)))
 }
 
@@ -34,6 +45,9 @@ func OutputErrorAndExit(msg string, args ...interface{}) {
 	StopSpinner()
 
 	msg = fmt.Sprintf(msg, args...)
+
+	// Record error for diagnostics before formatting
+	recordError(shared.ErrorCategoryInternal, "fatal_error", "FATAL_ERROR", msg)
 
 	msg = strings.ReplaceAll(msg, "status code:", "status code")
 	msg = strings.ReplaceAll(msg, ", body:", ":")
@@ -118,6 +132,17 @@ func OutputNoCurrentPlanErrorAndExit() {
 }
 
 func HandleApiError(apiError *shared.ApiError) {
+	// Record API error for diagnostics
+	if shared.GlobalErrorRegistry != nil {
+		report := shared.NewErrorReport(
+			shared.ErrorCategoryProvider,
+			string(apiError.Type),
+			"API_ERROR",
+			apiError.Msg,
+		)
+		shared.StoreError(report)
+	}
+
 	if apiError.Type == shared.ApiErrorTypeCloudSubscriptionPaused {
 		if apiError.BillingError.HasBillingPermission {
 			StopSpinner()

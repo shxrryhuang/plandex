@@ -180,7 +180,7 @@ func openChromeWithLogs(urls []string) error {
 			// Create a new tab for each additional URL
 			ctx, _ = chromedp.NewContext(browserCtx)
 		}
-		tabCtx, _ := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		tabCtx, tabCancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 
 		chromedp.ListenTarget(tabCtx, func(ev interface{}) {
 			switch e := ev.(type) {
@@ -211,12 +211,14 @@ func openChromeWithLogs(urls []string) error {
 			chromedp.WaitReady("body", chromedp.ByQuery),
 		); err != nil {
 			fmt.Printf("Failed to load url %s: %v", url, err)
+			tabCancel()
 			cancelBrowser()
 			cancelAllocator()
 			os.Exit(1)
 		} else {
 			fmt.Printf("Opened (%d/%d): %s\n", i+1, len(urls), url)
 		}
+		tabCancel()
 	}
 
 	fmt.Println("Chrome is running, waiting for error or interrupt...")

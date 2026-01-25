@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"plandex-cli/term"
 	"plandex-cli/types"
 	"plandex-cli/ui"
+	"time"
 
 	shared "plandex-shared"
 
@@ -58,6 +60,24 @@ func init() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
 
 	// log.Println("Starting Plandex - logging initialized")
+
+	// Initialize global error registry for diagnostics
+	sessionId := fmt.Sprintf("cli_%d", time.Now().UnixNano())
+	if err := shared.InitGlobalRegistry(fs.HomePlandexDir, sessionId); err != nil {
+		log.Printf("Warning: Failed to initialize error registry: %v", err)
+	}
+
+	// Check for debug mode environment variable
+	if os.Getenv("PLANDEX_DEBUG") == "1" || os.Getenv("PLANDEX_DEBUG") == "true" {
+		level := shared.ParseDebugLevel(os.Getenv("PLANDEX_DEBUG_LEVEL"))
+		traceFile := os.Getenv("PLANDEX_TRACE_FILE")
+		if traceFile == "" {
+			traceFile = filepath.Join(fs.HomePlandexDir, "debug_traces.log")
+		}
+		if err := shared.EnableDebugMode(level, traceFile); err != nil {
+			log.Printf("Warning: Failed to enable debug mode: %v", err)
+		}
+	}
 }
 
 func main() {
