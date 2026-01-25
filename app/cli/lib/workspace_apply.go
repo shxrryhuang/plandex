@@ -133,10 +133,11 @@ func ApplyFilesToWorkspace(
 			wsInfo, wsErr := os.Stat(wsPath)
 			if wsErr == nil {
 				// File already in workspace - read current content for rollback
-				wsContent, _ := os.ReadFile(wsPath)
-				mu.Lock()
-				toRevert[wsPath] = types.ApplyReversion{Content: string(wsContent), Mode: wsInfo.Mode()}
-				mu.Unlock()
+				if wsContent, readErr := os.ReadFile(wsPath); readErr == nil {
+					mu.Lock()
+					toRevert[wsPath] = types.ApplyReversion{Content: string(wsContent), Mode: wsInfo.Mode()}
+					mu.Unlock()
+				}
 			}
 
 			// Ensure workspace directory exists
@@ -195,12 +196,13 @@ func ApplyFilesToWorkspace(
 
 			// If file was in workspace, remove it
 			wsPath := ws.GetFilePath(path)
-			if _, err := os.Stat(wsPath); err == nil {
-				content, _ := os.ReadFile(wsPath)
-				info, _ := os.Stat(wsPath)
-				mu.Lock()
-				toRevert[wsPath] = types.ApplyReversion{Content: string(content), Mode: info.Mode()}
-				mu.Unlock()
+			if info, err := os.Stat(wsPath); err == nil {
+				// Read content for rollback before removing
+				if content, readErr := os.ReadFile(wsPath); readErr == nil {
+					mu.Lock()
+					toRevert[wsPath] = types.ApplyReversion{Content: string(content), Mode: info.Mode()}
+					mu.Unlock()
+				}
 
 				if err := os.Remove(wsPath); err != nil && !os.IsNotExist(err) {
 					errCh <- fmt.Errorf("failed to remove file from workspace: %w", err)

@@ -85,8 +85,10 @@ func (l *LazyFileAccess) Write(path string, content []byte, mode os.FileMode) er
 		if originalContent, err := os.ReadFile(originalPath); err == nil {
 			// File exists in original - this is a modification
 			originalHash := HashContent(originalContent)
-			info, _ := os.Stat(originalPath)
-			originalMode := info.Mode()
+			originalMode := mode // Default to provided mode
+			if info, err := os.Stat(originalPath); err == nil {
+				originalMode = info.Mode()
+			}
 
 			// Write to workspace
 			if err := os.WriteFile(wsPath, content, mode); err != nil {
