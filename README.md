@@ -1,3 +1,81 @@
+# Plandex — Concurrency Hardening Fork
+
+This fork contains concurrency bug fixes, resource leak repairs, a new CI pipeline for race/deadlock detection, and comprehensive documentation of the server's concurrency model.
+
+## What Changed
+
+### Bug Fixes (8 fixes across 19 files)
+
+| Fix | Description | Files |
+|-----|-------------|-------|
+| **C1** SafeMap copy | `Items()` returned internal map reference — callers raced with concurrent writes. Now returns a shallow copy. Added `SetIfAbsent` for atomic check-and-set. | `types/safe_map.go` |
+| **C2** Atomic needsRollback | `needsRollback` was a bare `bool` written inside goroutines. Changed to `atomic.Bool`. | `db/queue.go` |
+| **C3** Activation TOCTOU | Two concurrent `tell` requests could both register an active plan due to a 100ms sleep + non-atomic check. Replaced with `SetIfAbsent` on the plan registry. | `model/plan/activate.go`, `model/plan/state.go` |
+| **C4** Buffered StreamDoneCh | `StreamDoneCh` was unbuffered — senders blocked indefinitely if the receiver wasn't ready. Buffered to capacity 1. | `types/active_plan.go` |
+| **C5** Lock error messages | Lock exhaustion errors gave no actionable guidance. Now mention `plandex ps`, `plandex stop`, and 60s auto-expiry. | `db/locks.go`, `db/queue.go` |
+| **C6** Context cancel leaks | 22 `context.WithCancel` calls across 8 handler files had no `defer cancel()`, leaking contexts on early return. | `handlers/*.go` |
+| **C7** Body close ordering | `defer r.Body.Close()` was placed after `io.ReadAll` — body leaked if read failed. Moved defer before read in 10 locations. | `handlers/*.go`, `handlers/branches.go`, `handlers/plans_versions.go` |
+| **C8** Heuristic sleeps | Removed 2 unnecessary `time.Sleep(100ms)` calls that added latency without preventing races. | `handlers/plans_changes.go` |
+
+### CI Pipeline
+
+New workflow at `.github/workflows/concurrency-tests.yml` with three parallel jobs:
+
+- **Race Detection** — `go test -race` on `types`, `db`, and `model/plan` packages
+- **Stress Tests** — 10-iteration repeated runs of concurrency tests under the race detector
+- **Deadlock Detection** — 30-second timeout tests that catch blocked goroutines in timers, locks, and channels
+
+Triggers: push/PR to concurrency-critical paths, weekly schedule (Sunday 3AM UTC), manual dispatch. Auto-creates a GitHub issue on scheduled failure.
+
+### Documentation
+
+| Document | Description |
+|----------|-------------|
+| [`docs/CONCURRENCY_PATTERNS.md`](docs/CONCURRENCY_PATTERNS.md) | Rewritten from 417 to 925 lines. Covers shared mutable state map, 4-layer concurrency architecture, failure modes, timer/channel patterns, debugging guide, and testing strategy. |
+| [`BUGS_DOCUMENTATION.md`](BUGS_DOCUMENTATION.md) | All 16 fixes documented with root cause, code samples, and resolution. |
+| [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) | Updated section 10.4 with 4-layer concurrency architecture overview. |
+
+### Tests
+
+- `types/safe_map_test.go` — Updated `Items()` test to verify copy semantics. Added `SetIfAbsent` tests including a 100-goroutine concurrent race (exactly one winner).
+
+## Verification
+
+All changes compile and pass tests with the race detector:
+
+```bash
+cd app/server
+go build ./...
+go test -race ./types/... ./db/... ./model/plan/...
+```
+
+## Files Changed
+
+```
+ .github/workflows/concurrency-tests.yml |  364 +++
+ BUGS_DOCUMENTATION.md                   |  119 +
+ app/server/db/locks.go                  |    2 ~
+ app/server/db/queue.go                  |    9 ~
+ app/server/handlers/branches.go         |   11 ~
+ app/server/handlers/context_helper.go   |    1 +
+ app/server/handlers/plans_changes.go    |   14 ~
+ app/server/handlers/plans_context.go    |   10 ~
+ app/server/handlers/plans_convo.go      |    2 +
+ app/server/handlers/plans_exec.go       |   21 ~
+ app/server/handlers/plans_versions.go   |    4 ~
+ app/server/handlers/settings.go         |    2 +
+ app/server/model/plan/activate.go       |   28 ~
+ app/server/model/plan/state.go          |   11 ~
+ app/server/types/active_plan.go         |   13 ~
+ app/server/types/safe_map.go            |   22 ~
+ app/server/types/safe_map_test.go       |   75 ~
+ docs/CONCURRENCY_PATTERNS.md            |  985 ~
+ docs/SYSTEM_DESIGN.md                   |   11 ~
+ 19 files changed, 1405 insertions(+), 299 deletions(-)
+```
+
+---
+
 <h1 align="center">
  <a href="https://plandex.ai">
   <picture>
