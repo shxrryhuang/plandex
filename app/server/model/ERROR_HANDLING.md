@@ -417,6 +417,73 @@ go test ./model/... -run "Test(CircuitBreaker|DeadLetterQueue|Degradation|Health
 
 ---
 
+## CI/CD Pipeline
+
+**File:** `/.github/workflows/ci.yml`
+
+The CI pipeline runs on push and PR to main branch with three phases:
+
+### Pipeline Structure
+
+```
+┌─────────────────────────────────┐
+│     Preflight Validation        │
+│  (runs first, gates all work)   │
+└───────────────┬─────────────────┘
+                │
+        ┌───────┴───────┐
+        ▼               ▼
+┌───────────────┐ ┌───────────────┐
+│  Build & Test │ │     Lint      │
+│   (parallel)  │ │  (parallel)   │
+└───────────────┘ └───────────────┘
+```
+
+### Preflight Validation Phase
+
+Runs before any real work begins, validating:
+
+| Check | Command | Purpose |
+|-------|---------|---------|
+| Module verification | `go mod verify` | Ensure dependencies are intact |
+| Module tidiness | `go mod tidy` | Ensure go.mod/go.sum are clean |
+| Code formatting | `gofmt -l .` | Enforce consistent formatting |
+| Static analysis | `go vet ./...` | Catch common errors |
+| Vulnerability scan | `govulncheck ./...` | Identify security issues |
+
+### Build & Test Phase
+
+Runs after preflight passes:
+- Builds server and shared packages
+- Runs tests with race detection (`-race`)
+- Generates coverage reports
+- Uploads coverage artifacts
+
+### Lint Phase
+
+Runs after preflight passes (parallel with build):
+- Runs `golangci-lint` on server
+- Runs `golangci-lint` on shared
+- 5 minute timeout per package
+
+### Running Locally
+
+```bash
+# Run preflight checks locally
+go mod verify
+go mod tidy && git diff --exit-code go.mod go.sum
+gofmt -l .
+go vet ./...
+
+# Run tests
+go test -v -race ./...
+
+# Run linter (requires golangci-lint)
+golangci-lint run --timeout=5m
+```
+
+---
+
 ## Files Reference
 
 ### New Files Created
@@ -445,6 +512,13 @@ go test ./model/... -run "Test(CircuitBreaker|DeadLetterQueue|Degradation|Health
 
 ### 2026-01-28
 
+**CI/CD Pipeline:**
+- Added GitHub Actions CI workflow (`/.github/workflows/ci.yml`)
+- Added preflight validation phase that runs before build and lint
+- Preflight checks: go mod verify, go mod tidy, gofmt, go vet, govulncheck
+- Build and lint jobs now depend on preflight passing
+- All pipeline runs passing
+
 **Bug Fixes:**
 - Fixed `shared.NewUserError` undefined error in `dead_letter_queue.go` - replaced with `fmt.Errorf`
 - Fixed unused variable `capturedOldStatus` in `health_check_test.go`
@@ -458,3 +532,4 @@ go test ./model/... -run "Test(CircuitBreaker|DeadLetterQueue|Degradation|Health
 - All 52 error handling tests pass
 - Full build succeeds
 - All server package tests pass
+- CI pipeline runs successfully
