@@ -168,10 +168,10 @@ const (
 	EntryTypeError           EntryType = "error"
 
 	// Retry tracking entry types
-	EntryTypeRetryAttempt  EntryType = "retry_attempt"   // Records a retry attempt
-	EntryTypeRetryExhaust  EntryType = "retry_exhaust"   // Records when retries are exhausted
-	EntryTypeCircuitEvent  EntryType = "circuit_event"   // Records circuit breaker state changes
-	EntryTypeFallbackEvent EntryType = "fallback_event"  // Records fallback activations
+	EntryTypeRetryAttempt  EntryType = "retry_attempt"  // Records a retry attempt
+	EntryTypeRetryExhaust  EntryType = "retry_exhaust"  // Records when retries are exhausted
+	EntryTypeCircuitEvent  EntryType = "circuit_event"  // Records circuit breaker state changes
+	EntryTypeFallbackEvent EntryType = "fallback_event" // Records fallback activations
 )
 
 // EntryStatus tracks execution state of an entry
@@ -334,10 +334,10 @@ type RetryAttemptData struct {
 	Model    string `json:"model"`    // Model being used
 
 	// Retry policy
-	PolicyUsed string `json:"policyUsed"`        // Name of retry policy applied
-	DelayMs    int64  `json:"delayMs"`           // Delay before this retry in milliseconds
-	WillRetry  bool   `json:"willRetry"`         // Whether another retry will be attempted
-	Retryable  bool   `json:"retryable"`         // Whether the error is retryable
+	PolicyUsed string `json:"policyUsed"` // Name of retry policy applied
+	DelayMs    int64  `json:"delayMs"`    // Delay before this retry in milliseconds
+	WillRetry  bool   `json:"willRetry"`  // Whether another retry will be attempted
+	Retryable  bool   `json:"retryable"`  // Whether the error is retryable
 
 	// Idempotency tracking
 	IdempotencyKey string `json:"idempotencyKey,omitempty"` // Key for preventing duplicates
@@ -364,7 +364,7 @@ type RetryExhaustData struct {
 	Model    string `json:"model"`    // Model being used
 
 	// Fallback information
-	FallbackUsed bool   `json:"fallbackUsed"`          // Whether fallback was attempted
+	FallbackUsed bool   `json:"fallbackUsed"`           // Whether fallback was attempted
 	FallbackType string `json:"fallbackType,omitempty"` // Type of fallback used
 
 	// Resolution
@@ -381,9 +381,9 @@ type CircuitEventData struct {
 	NewState string `json:"newState"` // New circuit state
 
 	// Trigger information
-	TriggerReason   string `json:"triggerReason,omitempty"`   // Why the transition happened
-	ConsecFailures  int    `json:"consecFailures,omitempty"`  // Consecutive failures count
-	RecentFailures  int    `json:"recentFailures,omitempty"`  // Failures in sliding window
+	TriggerReason  string `json:"triggerReason,omitempty"`  // Why the transition happened
+	ConsecFailures int    `json:"consecFailures,omitempty"` // Consecutive failures count
+	RecentFailures int    `json:"recentFailures,omitempty"` // Failures in sliding window
 
 	// Recovery information (for half-open -> closed)
 	RecoverySuccesses int `json:"recoverySuccesses,omitempty"` // Successes in half-open
@@ -408,8 +408,8 @@ type FallbackEventData struct {
 	ErrorMessage string `json:"errorMessage,omitempty"` // Error message
 
 	// Outcome
-	Success bool   `json:"success"`          // Whether fallback succeeded
-	Error   string `json:"error,omitempty"`  // Error if fallback failed
+	Success bool   `json:"success"`         // Whether fallback succeeded
+	Error   string `json:"error,omitempty"` // Error if fallback failed
 }
 
 // =============================================================================
@@ -717,14 +717,14 @@ func (j *RunJournal) GetRetryStats() RetryJournalStats {
 
 // RetryJournalStats provides statistics about retry operations in a journal
 type RetryJournalStats struct {
-	TotalAttempts    int            `json:"totalAttempts"`
-	TotalDelayMs     int64          `json:"totalDelayMs"`
-	ExhaustedCount   int            `json:"exhaustedCount"`
-	FallbackCount    int            `json:"fallbackCount"`
-	FallbackSuccesses int           `json:"fallbackSuccesses"`
-	CircuitOpenCount int            `json:"circuitOpenCount"`
-	ByProvider       map[string]int `json:"byProvider"`
-	ByFailureType    map[string]int `json:"byFailureType"`
+	TotalAttempts     int            `json:"totalAttempts"`
+	TotalDelayMs      int64          `json:"totalDelayMs"`
+	ExhaustedCount    int            `json:"exhaustedCount"`
+	FallbackCount     int            `json:"fallbackCount"`
+	FallbackSuccesses int            `json:"fallbackSuccesses"`
+	CircuitOpenCount  int            `json:"circuitOpenCount"`
+	ByProvider        map[string]int `json:"byProvider"`
+	ByFailureType     map[string]int `json:"byFailureType"`
 }
 
 // =============================================================================

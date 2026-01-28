@@ -838,18 +838,6 @@ func ApplyFiles(toApply map[string]string, toRemove map[string]bool, projectPath
 		ToRevert:             map[string]types.ApplyReversion{},
 	}, nil
 }
-		err := <-errCh
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return updatedFiles, &types.ApplyRollbackPlan{
-		PreviousProjectPaths: projectPaths,
-		ToRevert:             toRevert,
-		ToRemove:             toRemoveOnRollback,
-	}, nil
-}
 
 func Rollback(rollbackPlan *types.ApplyRollbackPlan, msg bool) error {
 	numRoutines := len(rollbackPlan.ToRevert) + len(rollbackPlan.ToRemove) + 1
