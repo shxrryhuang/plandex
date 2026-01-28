@@ -170,7 +170,7 @@ func (rc *RetryContext) CanRetry(failureType FailureType) bool {
 // conditions, and stores the result in the global ErrorRegistry.
 // Returns the ErrorReport for logging or surfacing to the user.
 func (rc *RetryContext) FinalizeWithError(failure *ProviderFailure, stepCtx *StepContext) *ErrorReport {
-	report := FromProviderFailure(failure, stepCtx)
+	report := ErrorReportFromProviderFailure(failure, stepCtx)
 
 	// Attach retry history metadata as tags
 	report.Tags = append(report.Tags,

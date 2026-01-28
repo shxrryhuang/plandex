@@ -118,12 +118,12 @@ func TestPipelineCallbacks(t *testing.T) {
 		phaseChanges = append(phaseChanges, phase)
 		mu.Unlock()
 	}
-	config.OnStepStart = func(step *shared.Step) {
+	config.OnStepStart = func(step *shared.ProgressStep) {
 		mu.Lock()
 		stepStarts = append(stepStarts, step.ID)
 		mu.Unlock()
 	}
-	config.OnStepEnd = func(step *shared.Step) {
+	config.OnStepEnd = func(step *shared.ProgressStep) {
 		mu.Lock()
 		stepEnds = append(stepEnds, step.ID)
 		mu.Unlock()

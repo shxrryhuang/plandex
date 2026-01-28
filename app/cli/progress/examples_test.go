@@ -32,7 +32,7 @@ func testNormalExecution(t *testing.T) {
 		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-72 * time.Second),
-		Steps: []shared.Step{
+		Steps: []shared.ProgressStep{
 			{
 				ID:          "step-1",
 				Kind:        shared.StepKindContext,
@@ -94,7 +94,7 @@ func testSlowLLMCall(t *testing.T) {
 		Phase:      shared.ProgressPhasePlanning,
 		PhaseLabel: "Planning task",
 		StartedAt:  time.Now().Add(-105 * time.Second),
-		Steps: []shared.Step{
+		Steps: []shared.ProgressStep{
 			{
 				ID:          "step-1",
 				Kind:        shared.StepKindContext,
@@ -136,7 +136,7 @@ func testStalledOperation(t *testing.T) {
 		Phase:      shared.ProgressPhasePlanning,
 		PhaseLabel: "Planning task",
 		StartedAt:  time.Now().Add(-150 * time.Second),
-		Steps: []shared.Step{
+		Steps: []shared.ProgressStep{
 			{
 				ID:          "step-1",
 				Kind:        shared.StepKindContext,
@@ -179,7 +179,7 @@ func testFailureScenario(t *testing.T) {
 		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-32 * time.Second),
-		Steps: []shared.Step{
+		Steps: []shared.ProgressStep{
 			{
 				ID:          "step-1",
 				Kind:        shared.StepKindFileBuild,
@@ -242,7 +242,7 @@ func testUserInputWaiting(t *testing.T) {
 		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-45 * time.Second),
-		Steps: []shared.Step{
+		Steps: []shared.ProgressStep{
 			{
 				ID:          "step-1",
 				Kind:        shared.StepKindFileBuild,
@@ -300,7 +300,7 @@ func testNonTTYOutput(t *testing.T) {
 		{
 			Type:      shared.ProgressMsgStepStart,
 			Timestamp: time.Now().Add(-30 * time.Second),
-			Step: &shared.Step{
+			Step: &shared.ProgressStep{
 				ID:        "step-1",
 				Kind:      shared.StepKindContext,
 				State:     shared.StepStateRunning,
@@ -312,7 +312,7 @@ func testNonTTYOutput(t *testing.T) {
 		{
 			Type:      shared.ProgressMsgStepEnd,
 			Timestamp: time.Now().Add(-28 * time.Second),
-			Step: &shared.Step{
+			Step: &shared.ProgressStep{
 				ID:          "step-1",
 				Kind:        shared.StepKindContext,
 				State:       shared.StepStateCompleted,
@@ -325,7 +325,7 @@ func testNonTTYOutput(t *testing.T) {
 		{
 			Type:      shared.ProgressMsgStepStart,
 			Timestamp: time.Now().Add(-28 * time.Second),
-			Step: &shared.Step{
+			Step: &shared.ProgressStep{
 				ID:        "step-2",
 				Kind:      shared.StepKindLLMCall,
 				State:     shared.StepStateRunning,
@@ -337,7 +337,7 @@ func testNonTTYOutput(t *testing.T) {
 		{
 			Type:      shared.ProgressMsgStepUpdate,
 			Timestamp: time.Now().Add(-15 * time.Second),
-			Step: &shared.Step{
+			Step: &shared.ProgressStep{
 				ID:              "step-2",
 				Kind:            shared.StepKindLLMCall,
 				State:           shared.StepStateRunning,
@@ -350,7 +350,7 @@ func testNonTTYOutput(t *testing.T) {
 		{
 			Type:      shared.ProgressMsgStepEnd,
 			Timestamp: time.Now(),
-			Step: &shared.Step{
+			Step: &shared.ProgressStep{
 				ID:              "step-2",
 				Kind:            shared.StepKindLLMCall,
 				State:           shared.StepStateCompleted,
@@ -409,7 +409,7 @@ func TestStateReliability(t *testing.T) {
 // TestStallDetection verifies stall detection logic
 func TestStallDetection(t *testing.T) {
 	// LLM call running for 90 seconds (3x expected 30s) should be stalled
-	step := &shared.Step{
+	step := &shared.ProgressStep{
 		Kind:      shared.StepKindLLMCall,
 		State:     shared.StepStateRunning,
 		StartedAt: time.Now().Add(-90 * time.Second),
@@ -426,7 +426,7 @@ func TestStallDetection(t *testing.T) {
 	}
 
 	// User input should never stall
-	inputStep := &shared.Step{
+	inputStep := &shared.ProgressStep{
 		Kind:      shared.StepKindUserInput,
 		State:     shared.StepStateWaiting,
 		StartedAt: time.Now().Add(-300 * time.Second),
