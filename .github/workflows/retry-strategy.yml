@@ -1,0 +1,449 @@
+# Retry Strategy Verification Workflow
+#
+# Dedicated CI for the error-handling and retry subsystem introduced in
+# app/shared/{retry_config,operation_safety,retry_context}.go and wired
+# into app/server/model/client_stream.go.
+#
+# Gates:
+#   - All retry/safety/context tests pass under the race detector
+#   - Backoff math: exponential growth, jitter bounds, max clamping
+#   - Operation safety: every OperationSafety level is classified correctly
+#   - RetryContext: attempt lifecycle, CanRetry caps, fallback recording
+#   - Coverage of the three new shared files >= 80 %
+#
+# Triggers:
+#   - Push to main / develop that touches retry or model files
+#   - Any PR that touches retry or model files
+#
+# Updated: January 28, 2026
+#
+
+name: Retry Strategy CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "app/shared/retry_config.go"
+      - "app/shared/retry_config_test.go"
+      - "app/shared/operation_safety.go"
+      - "app/shared/operation_safety_test.go"
+      - "app/shared/retry_context.go"
+      - "app/shared/retry_context_test.go"
+      - "app/shared/replay_executor.go"
+      - "app/shared/replay_executor_test.go"
+      - "app/shared/ai_models_errors.go"
+      - "app/shared/error_registry.go"
+      - "app/shared/run_journal.go"
+      - "app/shared/provider_failures.go"
+      - "app/shared/unrecoverable_errors.go"
+      - "app/server/model/client.go"
+      - "app/server/model/client_stream.go"
+      - "app/server/model/model_error.go"
+
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "app/shared/retry_config.go"
+      - "app/shared/retry_config_test.go"
+      - "app/shared/operation_safety.go"
+      - "app/shared/operation_safety_test.go"
+      - "app/shared/retry_context.go"
+      - "app/shared/retry_context_test.go"
+      - "app/shared/replay_executor.go"
+      - "app/shared/replay_executor_test.go"
+      - "app/shared/ai_models_errors.go"
+      - "app/shared/error_registry.go"
+      - "app/shared/run_journal.go"
+      - "app/shared/provider_failures.go"
+      - "app/shared/unrecoverable_errors.go"
+      - "app/server/model/client.go"
+      - "app/server/model/client_stream.go"
+      - "app/server/model/model_error.go"
+
+env:
+  GO_VERSION: '1.23'
+  # Minimum coverage for the three new retry files combined
+  RETRY_COVERAGE_THRESHOLD: 80
+
+jobs:
+  # -----------------------------------------------------------------------
+  # 1. Build — ensure the retry subsystem compiles cleanly
+  # -----------------------------------------------------------------------
+  build:
+    name: Build Retry Subsystem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Build server (includes shared dependency)
+        run: |
+          cd app/server
+          go build ./...
+
+      - name: Vet retry and model packages
+        run: |
+          cd app/server
+          go vet plandex-shared
+          go vet ./model/...
+
+  # -----------------------------------------------------------------------
+  # 2. Retry config tests — backoff math, jitter, env loading
+  # -----------------------------------------------------------------------
+  retry-config:
+    name: Retry Config Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run retry config tests with race detector
+        run: |
+          cd app/server
+          go test plandex-shared -run "TestRetryConfig|TestComputeBackoff|TestLoadRetryConfig|TestIsProviderRetryAfter" -v -race -count=1 2>&1 | tee retry-config-output.txt
+
+          PASSED=$(grep -c "^--- PASS:" retry-config-output.txt || true)
+          FAILED=$(grep -c "^--- FAIL:" retry-config-output.txt || true)
+
+          echo "## Retry Config Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "::error::$FAILED retry config test(s) failed"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------------------
+  # 3. Operation safety tests — classification and guard logic
+  # -----------------------------------------------------------------------
+  operation-safety:
+    name: Operation Safety Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run operation safety tests with race detector
+        run: |
+          cd app/server
+          go test plandex-shared -run "TestOperationSafety|TestIsOperationSafe|TestClassifyOperation" -v -race -count=1 2>&1 | tee safety-output.txt
+
+          PASSED=$(grep -c "^--- PASS:" safety-output.txt || true)
+          FAILED=$(grep -c "^--- FAIL:" safety-output.txt || true)
+
+          echo "## Operation Safety Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "::error::$FAILED operation safety test(s) failed"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------------------
+  # 4. Retry context tests — attempt lifecycle, CanRetry, fallback recording
+  # -----------------------------------------------------------------------
+  retry-context:
+    name: Retry Context Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run retry context tests with race detector
+        run: |
+          cd app/server
+          go test plandex-shared -run "TestNewRetryContext|TestRecordAttempt|TestCanRetry|TestSummary|TestAttempt|TestLastAttempt|TestFinalizeWithError" -v -race -count=1 2>&1 | tee context-output.txt
+
+          PASSED=$(grep -c "^--- PASS:" context-output.txt || true)
+          FAILED=$(grep -c "^--- FAIL:" context-output.txt || true)
+
+          echo "## Retry Context Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "::error::$FAILED retry context test(s) failed"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------------------
+  # 5. Replay executor tests — three-mode dispatch, divergence detection
+  # -----------------------------------------------------------------------
+  replay-executor:
+    name: Replay Executor Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run replay executor tests with race detector
+        run: |
+          cd app/server
+          go test plandex-shared -run "TestNewReplayExecutor|TestExecuteNext|TestExecuteRange|TestJumpTo|TestPauseAndResume|TestCheckFileDivergence|TestReplayOptions|TestDefaultReplayOptions|TestCaptureFileHash|TestTruncateContent" -v -race -count=1 2>&1 | tee replay-output.txt
+
+          PASSED=$(grep -c "^--- PASS:" replay-output.txt || true)
+          FAILED=$(grep -c "^--- FAIL:" replay-output.txt || true)
+
+          echo "## Replay Executor Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "::error::$FAILED replay executor test(s) failed"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------------------
+  # 6. Model error classification — ProviderFailureType populated correctly
+  # -----------------------------------------------------------------------
+  model-error-classification:
+    name: Model Error Classification Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Run model error tests
+        run: |
+          cd app/server
+          go test plandex-server/model -run "TestClassify" -v -count=1 2>&1 | tee model-error-output.txt
+
+          PASSED=$(grep -c "^--- PASS:" model-error-output.txt || true)
+          FAILED=$(grep -c "^--- FAIL:" model-error-output.txt || true)
+
+          echo "## Model Error Classification Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${FAILED:-0}" -gt 0 ]; then
+            echo "::error::$FAILED model error classification test(s) failed"
+            exit 1
+          fi
+
+  # -----------------------------------------------------------------------
+  # 7. Coverage gate — retry subsystem files must meet threshold
+  # -----------------------------------------------------------------------
+  coverage:
+    name: Retry Subsystem Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: |
+          cd app/server
+          go mod download
+
+      - name: Collect coverage for shared package
+        run: |
+          cd app/server
+          go test plandex-shared -coverprofile=retry-coverage.out -covermode=atomic -count=1
+
+      - name: Report per-file coverage for retry subsystem
+        run: |
+          cd app/server
+          echo "## Retry Subsystem Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|" >> $GITHUB_STEP_SUMMARY
+
+          # Extract coverage for each retry file
+          for file in retry_config operation_safety retry_context replay_executor; do
+            COV=$(go tool cover -func=retry-coverage.out | grep "${file}.go" | awk '{sum+=$3; n++} END {if(n>0) printf "%.1f%%", sum/n; else print "0.0%"}')
+            echo "| ${file}.go | ${COV} |" >> $GITHUB_STEP_SUMMARY
+            echo "${file}.go: ${COV}"
+          done
+
+          # Compute combined coverage across all retry files
+          COMBINED=$(go tool cover -func=retry-coverage.out | grep -E "retry_config|operation_safety|retry_context|replay_executor" | awk '{
+            gsub(/%/, "", $3)
+            sum += $3
+            n++
+          } END {
+            if (n > 0) printf "%.1f", sum/n
+            else printf "0.0"
+          }')
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Combined retry subsystem coverage: ${COMBINED}%**" >> $GITHUB_STEP_SUMMARY
+          echo "**Threshold: ${{ env.RETRY_COVERAGE_THRESHOLD }}%**" >> $GITHUB_STEP_SUMMARY
+
+          # Enforce threshold
+          THRESHOLD=${{ env.RETRY_COVERAGE_THRESHOLD }}
+          if (( $(echo "$COMBINED < $THRESHOLD" | bc -l) )); then
+            echo "::error::Retry subsystem coverage (${COMBINED}%) is below threshold (${THRESHOLD}%)"
+            exit 1
+          fi
+          echo "Coverage gate passed (${COMBINED}% >= ${THRESHOLD}%)"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retry-coverage
+          path: app/server/retry-coverage.out
+
+  # -----------------------------------------------------------------------
+  # 8. Format check — retry and model files must be gofmt-clean
+  # -----------------------------------------------------------------------
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check formatting of retry and model files
+        run: |
+          UNFORMATTED=$(gofmt -l \
+            app/shared/retry_config.go \
+            app/shared/operation_safety.go \
+            app/shared/retry_context.go \
+            app/shared/replay_executor.go \
+            app/shared/replay_executor_test.go \
+            app/shared/ai_models_errors.go \
+            app/shared/error_registry.go \
+            app/shared/run_journal.go \
+            app/server/model/client.go \
+            app/server/model/client_stream.go \
+            app/server/model/model_error.go \
+            2>&1)
+
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::The following retry/model files are not gofmt-formatted:"
+            echo "$UNFORMATTED"
+            echo ""
+            echo "Run 'gofmt -w <file>' to fix."
+            exit 1
+          fi
+          echo "All retry and model files are properly formatted."
