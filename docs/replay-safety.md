@@ -10,7 +10,7 @@ This document explains how replay mode differs from normal execution in terms of
 | **File Writes** | ✅ Yes | ❌ None | ❌ None | ✅ Yes |
 | **Token Cost** | ✅ Incurs cost | ❌ Free | ❌ Free | ❌ Free |
 | **Deterministic** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Reversible** | ⚠️ Difficult | ✅ N/A (no changes) | ✅ N/A (no changes) | ⚠️ Git revert |
+| **Reversible** | ✅ Atomic rollback via FileTransaction | ✅ N/A (no changes) | ✅ N/A (no changes) | ⚠️ Git revert |
 | **Safe by Default** | ⚠️ No | ✅ Yes | ✅ Yes | ❌ Requires opt-in |
 
 ---
@@ -282,7 +282,7 @@ Replay mode integrates with the broader recovery and resilience system:
 | Component | File | Role in Safety |
 |-----------|------|----------------|
 | **Provider Failures** | `provider_failures.go` | Classifies errors as retryable vs non-retryable |
-| **File Transactions** | `file_transaction.go` | ACID-like guarantees with rollback support |
+| **File Transactions** | `file_transaction.go` | WAL-backed transactions with persisted snapshots, sequential apply, reverse-order rollback, and crash recovery via `RecoverTransaction()` |
 | **Resume Algorithm** | `resume_algorithm.go` | Safe continuation from checkpoints |
 | **Error Reporting** | `error_report.go` | Surfaces root cause, context, recovery options |
 | **Unrecoverable Errors** | `unrecoverable_errors.go` | Documents edge cases where recovery impossible |
@@ -294,11 +294,13 @@ Normal Execution (with failure):
     │
     ├─▶ Provider Failure ──▶ ClassifyProviderFailure()
     │         │
-    │         ├─▶ Retryable? ──▶ FileTransaction.Rollback() ──▶ Retry
+    │         ├─▶ Retryable? ──▶ FileTransaction.Rollback()
+    │         │                   (reverse-order restore from persisted snapshots)
+    │         │                   ──▶ Retry
     │         │
     │         └─▶ Non-Retryable? ──▶ ErrorReport.Format() ──▶ User Action
     │
-    └─▶ Journal + Checkpoint saved
+    └─▶ Journal + Checkpoint saved (snapshots flushed before writes)
 
 Replay Mode (after failure):
     │
