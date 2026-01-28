@@ -85,6 +85,14 @@ type streamUIModel struct {
 
 	buildViewCollapsed bool
 	userToggledBuild   bool
+
+	// Progress tracking
+	progressReport    *shared.ProgressReport
+	progressStepSeq   int
+	progressBuildIDs  map[string]string // path -> stepID
+	progressLLMID     string
+	progressContextID string
+	showProgressView  bool // Toggle between classic and progress view with 'p'
 }
 
 type keymap = struct {
@@ -99,7 +107,8 @@ type keymap = struct {
 	down,
 	quit,
 	background,
-	enter bubbleKey.Binding
+	enter,
+	toggleProgress bubbleKey.Binding
 }
 
 func (m streamUIModel) Init() tea.Cmd {
@@ -195,20 +204,40 @@ func initialModel(prestartReply, prompt string, buildOnly bool, canSendToBg bool
 				bubbleKey.WithKeys("G", "end"),
 				bubbleKey.WithHelp("G", "end"),
 			),
+
+			toggleProgress: bubbleKey.NewBinding(
+				bubbleKey.WithKeys("p"),
+				bubbleKey.WithHelp("p", "progress view"),
+			),
 		},
 
-		tokensByPath:    make(map[string]int),
-		finishedByPath:  make(map[string]bool),
-		removedByPath:   make(map[string]bool),
-		spinner:         s,
-		buildSpinner:    buildSpinner,
-		sharedTicker:    sharedTicker,
-		atScrollBottom:  true,
-		starting:        true,
-		updateDebouncer: NewUpdateDebouncer(8 * time.Millisecond),
+		tokensByPath:     make(map[string]int),
+		finishedByPath:   make(map[string]bool),
+		removedByPath:    make(map[string]bool),
+		spinner:          s,
+		buildSpinner:     buildSpinner,
+		sharedTicker:     sharedTicker,
+		atScrollBottom:   true,
+		starting:         true,
+		updateDebouncer:  NewUpdateDebouncer(8 * time.Millisecond),
+		progressBuildIDs: make(map[string]string),
+		progressReport:   newProgressReport(),
+		showProgressView: true,
 	}
 
 	return &initialState
+}
+
+// newProgressReport creates an initialized progress report
+func newProgressReport() *shared.ProgressReport {
+	return &shared.ProgressReport{
+		Phase:      shared.PhaseInitializing,
+		PhaseLabel: "Initializing",
+		StartedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		Steps:      make([]shared.Step, 0),
+		CanCancel:  true,
+	}
 }
 
 func (m streamUIModel) Tick() tea.Cmd {
