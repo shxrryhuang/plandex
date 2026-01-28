@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
-**Version:** 1.3
-**Last Updated:** January 2026 (Added Progress Reporting, Error Handling & Retry Strategy, Atomic Patch Application; wired retry policy, operation safety, and retry context into streaming retry loop)
+**Version:** 1.4
+**Last Updated:** January 2026 (Added Progress Reporting, Error Handling & Retry Strategy, Atomic Patch Application; resolved upstream merge build errors in retry_context, apply.go, and progress tests)
 
 ---
 
@@ -1382,16 +1382,28 @@ The `StreamAdapter` translates the backend's `StreamMessage` protocol into `Trac
 
 ```
 app/shared/
-└── progress.go                  # Core types (StepState, StepKind, Step, ProgressReport)
+└── progress.go                  # Core types: ProgressStep (Kind, State, CompletedAt),
+                                 #   StepState, StepKind, ProgressPhase, ProgressReport,
+                                 #   ProgressMessage. Also contains a simpler Step type
+                                 #   used by the newer Progress snapshot API.
 
 app/cli/progress/
 ├── tracker.go                   # State coordinator, event loop, stall detection
 ├── renderer.go                  # TTY/non-TTY output formatting
 ├── stream_adapter.go            # StreamMessage → Tracker bridge
+├── examples_test.go             # Rendered-output examples (uses ProgressStep literals)
 └── pipeline/
     ├── pipeline.go              # Standalone callback-driven orchestrator
+    ├── pipeline_test.go         # Pipeline unit tests (callbacks typed *ProgressStep)
     └── runner.go                # Visual executor with spinner animation
 ```
+
+> **Note:** `progress.go` exports two step-like types. The progress reporting
+> system (Tracker, Pipeline, StreamAdapter) uses `ProgressStep` — the struct
+> with `Kind`, `State`, `CompletedAt`, and `TokensProcessed`. The newer
+> `Progress` snapshot API uses the simpler `Step` struct with `Phase`,
+> `Status`, and `Confidence`. Tests and callbacks must match the type expected
+> by the API they target.
 
 ---
 
@@ -1516,6 +1528,10 @@ The `IdempotencyManager` prevents duplicate side effects across retries:
 app/shared/
 ├── retry_policy.go           # Policy definitions, delay calculation, RetryState
 ├── retry_policy_test.go      # Test coverage
+├── retry_config.go           # Per-type policy config, env overrides, backoff math
+├── retry_context.go          # RetryContext: per-attempt tracking, FinalizeWithError()
+│                             #   calls ErrorReportFromProviderFailure() + DetectUnrecoverableCondition()
+├── operation_safety.go       # OperationSafety enum + IsOperationSafe() idempotency guard
 ├── idempotency.go            # Deduplication, file change records, stats
 ├── idempotency_test.go       # Test coverage
 ├── run_journal.go            # Execution log: entries, checkpoints, retry events
@@ -1540,7 +1556,13 @@ app/server/model/
 
 ### 15.1 Overview
 
-File application is wrapped in a transactional layer that guarantees all-or-nothing semantics. If any operation fails mid-sequence, all previously applied changes in that transaction are rolled back to their pre-transaction state. A write-ahead log (WAL) provides crash recovery, and an optional workspace isolation layer lets changes be staged and reviewed before committing to the project.
+The patch application system provides two complementary paths for writing plan changes to disk:
+
+1. **Concurrent goroutine path** (`ApplyFiles`) — the current production entry point. Each file write runs in its own goroutine; errors are collected via a buffered channel. A per-file rollback plan (`ToRevert` / `ToRemove`) is returned so the caller can undo changes if a downstream step (e.g., a post-apply script) fails.
+
+2. **Transactional path** (`FileTransaction`) — a stricter, ACID-like engine available for callers that need all-or-nothing semantics. It captures snapshots at `Begin()`, applies operations sequentially, and rolls back the entire set on any failure. A write-ahead log (WAL) provides crash recovery, and named checkpoints allow partial restore.
+
+The workspace isolation layer (`ApplyFilesToWorkspace` / `Manager.Commit`) sits above either path and redirects writes to an isolated directory before committing atomically to the project.
 
 ### 15.2 Architecture
 
@@ -1640,12 +1662,20 @@ app/shared/
 └── unrecoverable_errors.go      # Fatal error classification with user guidance
 
 app/cli/lib/
-├── apply.go                     # ApplyFiles(), Rollback(), script execution, git commit
+├── apply.go                     # ApplyFiles() — concurrent goroutine path with errCh drain
+│                                #   and per-file rollback plan; Rollback() restores from plan;
+│                                #   script execution, git commit helpers
 └── workspace_apply.go           # Workspace-aware apply/rollback adapter
 
 app/cli/workspace/
 └── manager.go                   # Workspace lifecycle: create, activate, commit, discard, cleanup
 ```
+
+> **Integration note:** `ApplyFiles()` currently uses the concurrent goroutine
+> path. The `FileTransaction` engine is available for stricter transactional
+> semantics (e.g., workspace commits via `Manager.Commit()`). Wiring
+> `ApplyFiles` directly into `FileTransaction` is a candidate for a future
+> iteration once the transactional path has broader test coverage.
 
 ---
 
@@ -1675,7 +1705,8 @@ Key Shared Files:
   /app/shared/retry_policy.go             Retry policies + exponential backoff
   /app/shared/retry_config.go             RetryConfig: per-type policy, env loading, backoff math
   /app/shared/operation_safety.go         OperationSafety enum + IsOperationSafe() guard
-  /app/shared/retry_context.go            RetryContext: per-attempt tracking + journal bridge
+  /app/shared/retry_context.go            RetryContext: per-attempt tracking; FinalizeWithError()
+                                          calls ErrorReportFromProviderFailure() + journal bridge
   /app/shared/idempotency.go              Deduplication across retries
   /app/shared/file_transaction.go         ACID-like transactional file operations
   /app/shared/patch_status.go             Per-file status event reporting
@@ -1701,7 +1732,7 @@ Key Model / Error Handling Files (Server):
   /app/server/model/health_check.go       Proactive monitoring + routing
 
 Key Apply Files:
-  /app/cli/lib/apply.go                   ApplyFiles() + script execution
+  /app/cli/lib/apply.go                   ApplyFiles() — concurrent goroutine path + Rollback()
   /app/cli/lib/workspace_apply.go         Workspace-aware apply adapter
   /app/cli/workspace/manager.go           Workspace lifecycle management
 ```
@@ -1722,4 +1753,4 @@ Key Apply Files:
 
 ---
 
-*Document generated: January 2026 · Last updated: January 28, 2026 (v1.2)*
+*Document generated: January 2026 · Last updated: January 28, 2026 (v1.4)*
