@@ -1,7 +1,103 @@
-# Feature Updates — Startup & Provider Validation Phase
+# Feature Updates
 
 **Date:** 2026-01-28
-**Status:** Complete — all tests passing, CLI builds cleanly, pipeline verified, error scan done
+**Status:** Complete — all systems tested, CLI builds cleanly, pipelines verified
+
+---
+
+## Recent Additions
+
+| # | Feature | Commit | Key Files |
+|---|---------|--------|-----------|
+| 1 | Progress Reporting System | `0f271ee5` | `app/shared/progress.go`, `app/cli/progress/` |
+| 2 | Error Handling & Retry Strategy | `ec63f2a3` | `app/shared/retry_policy.go`, `app/server/model/` |
+| 3 | Atomic Patch Application | `9f0109a8` | `app/shared/file_transaction.go`, `app/cli/lib/apply.go` |
+| 4 | Startup & Provider Validation | `e588f997` | `app/shared/validation.go`, `app/cli/lib/startup_validation.go` |
+
+---
+
+## Progress Reporting System
+
+### Summary
+
+Added real-time, step-level execution tracking that surfaces every phase and operation as it happens. Output adapts automatically: animated progress bars and spinners in a terminal, structured log lines in CI/piped output.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `app/shared/progress.go` | Core types: `StepState`, `StepKind`, `Step`, `ProgressPhase`, `ProgressReport`, `ProgressMessage` |
+| `app/cli/progress/tracker.go` | State coordinator with 100ms event loop, stall detection, phase callbacks |
+| `app/cli/progress/renderer.go` | TTY (ANSI progress bars, spinners, color) and non-TTY (structured logs) output |
+| `app/cli/progress/stream_adapter.go` | Bridges `StreamMessage` protocol → `Tracker` updates without modifying either side |
+| `app/cli/progress/pipeline/pipeline.go` | Standalone callback-driven orchestrator for isolated testing |
+| `app/cli/progress/pipeline/runner.go` | Visual executor with spinner animation for demos/scenarios |
+
+### Key Design Decisions
+
+- **Two rendering paths:** TTY uses ANSI escape codes to clear and redraw; non-TTY emits one log line per event. Detection is automatic.
+- **Guaranteed vs best-effort states:** Terminal states (`completed`, `failed`, `skipped`) never change; live states (`running`, `waiting`, `stalled`) are indicators.
+- **Per-kind stall thresholds:** LLM calls get 60 s, file builds 120 s, validation 30 s — avoids false positives while catching real hangs.
+- **StreamAdapter pattern:** Decouples the legacy streaming protocol from the new progress model; either side can evolve independently.
+
+---
+
+## Error Handling & Retry Strategy
+
+### Summary
+
+Added a multi-layered resilience stack for provider interactions: configurable retry policies with exponential backoff, circuit breakers with per-provider state machines, graceful degradation that reduces scope under stress, a dead-letter queue for exhausted operations, health monitoring for smart routing, and stream recovery for partial response tracking.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `app/shared/retry_policy.go` | Per-failure-type policies, exponential backoff + jitter, `RetryState` tracking |
+| `app/shared/idempotency.go` | Deduplication across retries via key tracking, file-change records, hash verification |
+| `app/shared/run_journal.go` | Persistent execution log: entries, checkpoints, retry/circuit/fallback events, pause/resume |
+| `app/shared/ai_models_errors.go` | `ModelError` ↔ `ProviderFailure` bridge + multi-level fallback routing |
+| `app/server/model/circuit_breaker.go` | Per-provider Closed → Open → HalfOpen state machine |
+| `app/server/model/dead_letter_queue.go` | Stores failed ops after all retries; supports auto-retry scheduling |
+| `app/server/model/graceful_degradation.go` | 5-level degradation: adjusts context size, timeouts, retries, model selection |
+| `app/server/model/health_check.go` | Proactive monitoring with latency percentiles and health scoring |
+| `app/server/model/stream_recovery.go` | Partial stream buffering with token-based checkpoints |
+
+### Key Design Decisions
+
+- **Three-layer stack:** Failure Classification & Retry → Provider Health & Routing → Recovery & Audit. Each layer is independently testable.
+- **Idempotency before retry:** Every operation gets a stable key before the first attempt; retries are safe by construction.
+- **Circuit breaker excludes auth errors:** Authentication failures bypass the circuit so they surface immediately rather than being masked.
+- **Degradation auto-triggers:** Error rate crossing a threshold activates the next level automatically; recovery requires explicit action or cool-off.
+
+---
+
+## Atomic Patch Application
+
+### Summary
+
+Wrapped file application in a transactional layer with all-or-nothing semantics. If any file operation fails mid-sequence, all previously applied changes roll back. A write-ahead log provides crash recovery. An optional workspace isolation layer lets changes be staged and reviewed before being committed to the project.
+
+### New / Significantly Modified Files
+
+| File | What changed |
+|------|--------------|
+| `app/shared/file_transaction.go` | Extended with WAL, snapshots, checkpoints, `RollbackOnProviderFailure()`, `RecoverTransaction()` |
+| `app/shared/patch_status.go` | New — `PatchStatusReporter` interface, per-file and per-transaction event callbacks |
+| `app/shared/patch_apply_test.go` | New — transaction integration tests |
+| `app/cli/lib/apply.go` | Rewritten to use `FileTransaction`; added script execution with signal handling |
+| `app/cli/lib/workspace_apply.go` | New — workspace-aware apply/rollback adapter |
+| `app/cli/workspace/manager.go` | Extended with `Commit()` (transactional project writes), `Resume()`, stale cleanup |
+
+### Key Design Decisions
+
+- **Snapshot at Begin():** Original file contents captured once; any subsequent failure restores from snapshot.
+- **WAL for crash safety:** Intent entries written before each operation; `RecoverTransaction()` can replay from WAL after an unexpected exit.
+- **Workspace commit is also transactional:** `Manager.Commit()` snapshots project files before applying workspace changes; rolls back on failure.
+- **Metadata updates are deferred:** In workspace mode, tracking maps are updated only after all file writes succeed — atomic from the caller's perspective.
+
+---
+
+## Startup & Provider Validation Phase
 
 ---
 

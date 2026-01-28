@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
-**Version:** 1.2
-**Last Updated:** January 28, 2026 (Added Startup & Provider Validation, CI Pipeline, Error Scan; wired retry policy, operation safety, and retry context into streaming retry loop)
+**Version:** 1.3
+**Last Updated:** January 2026 (Added Progress Reporting, Error Handling & Retry Strategy, Atomic Patch Application; wired retry policy, operation safety, and retry context into streaming retry loop)
 
 ---
 
@@ -19,6 +19,9 @@
 10. [Performance Considerations](#10-performance-considerations)
 11. [Recovery & Resilience System](#11-recovery--resilience-system)
 12. [Startup & Provider Validation](#12-startup--provider-validation)
+13. [Progress Reporting System](#13-progress-reporting-system)
+14. [Error Handling & Retry Strategy](#14-error-handling--retry-strategy)
+15. [Atomic Patch Application](#15-atomic-patch-application)
 
 ---
 
@@ -202,7 +205,12 @@ app/server/
 │   ├── data_models.go     # Schema models
 │   ├── plan_helpers.go    # Plan operations
 │   └── migrations/        # 50+ SQL migrations
-├── model/                  # AI model integration
+├── model/                  # AI model integration & resilience
+│   ├── circuit_breaker.go # Provider health state machine
+│   ├── dead_letter_queue.go # Failed operation storage
+│   ├── graceful_degradation.go # Adaptive quality reduction
+│   ├── health_check.go    # Proactive provider monitoring
+│   ├── stream_recovery.go # Partial stream tracking
 │   ├── client.go          # Client management
 │   ├── client_stream.go   # Streaming responses
 │   └── plan/              # Plan execution engine (36 files)
@@ -236,13 +244,21 @@ app/shared/
 ├── retry_config.go           # Configurable retry policy (env overrides, backoff, jitter)
 ├── operation_safety.go       # OperationSafety enum + IsOperationSafe() idempotency guard
 ├── retry_context.go          # RetryContext — per-attempt tracking, journal bridge
-├── file_transaction.go       # Transactional file operations
+├── file_transaction.go       # Transactional file operations (ACID-like)
 ├── resume_algorithm.go       # Safe resume from checkpoints
 ├── error_report.go           # Comprehensive error reporting
 ├── error_registry.go         # Persistent error store (StoreWithContext bridge)
 ├── unrecoverable_errors.go   # Unrecoverable edge cases + DetectUnrecoverableCondition
-├── run_journal.go            # Execution journal (RecordRetryAttempt/RecordRetryOutcome)
-└── replay_types.go           # Replay mode types
+├── run_journal.go            # Execution journal (retry/circuit/fallback events, checkpoints)
+├── replay_types.go           # Replay mode types
+│
+├── # Progress Reporting
+├── progress.go               # Core types: Step, StepState, StepKind, ProgressReport
+│
+├── # Error Handling & Retry
+├── retry_policy.go           # Configurable retry with exponential backoff
+├── idempotency.go            # Deduplication across retries
+└── ai_models_errors.go       # ModelError ↔ ProviderFailure bridge + fallback routing
 ```
 
 ---
@@ -513,28 +529,49 @@ User: plandex apply
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                 Apply Process                            │
+│           Apply Process (Atomic Transaction)             │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │  1. Get pending changes from server                     │
 │     GET /plans/{id}/{branch}/diffs                      │
 │                                                         │
-│  2. For each file change:                               │
+│  2. FileTransaction.Begin()                             │
 │     ┌─────────────────────────────────────────────────┐│
-│     │ a. Read current file from disk                  ││
-│     │ b. Apply structured edit                        ││
-│     │ c. Write updated file                           ││
-│     │ d. Validate syntax (optional)                   ││
+│     │ For each file change:                           ││
+│     │  a. Snapshot original content (rollback source) ││
+│     │  b. Stage operation (Create/Modify/Delete)      ││
+│     │  c. WAL entry written (crash safety)            ││
 │     └─────────────────────────────────────────────────┘│
 │                                                         │
-│  3. Git integration (optional):                         │
+│  3. FileTransaction.ApplyAll()                          │
+│     ┌─────────────────────────────────────────────────┐│
+│     │  • Operations applied sequentially              ││
+│     │  • PatchStatusReporter fires per-file events    ││
+│     │  • On failure → Rollback() restores all files   ││
+│     └─────────────────────────────────────────────────┘│
+│                                                         │
+│  4. (Optional) Workspace isolation path:                │
+│     ┌─────────────────────────────────────────────────┐│
+│     │  • ApplyFilesToWorkspace() redirects to          ││
+│     │    isolated workspace directory                  ││
+│     │  • Manager.Commit() pushes to project           ││
+│     │    atomically after all writes succeed           ││
+│     └─────────────────────────────────────────────────┘│
+│                                                         │
+│  5. Post-apply script (optional):                       │
+│     ┌─────────────────────────────────────────────────┐│
+│     │  • Execute _apply.sh with signal handling       ││
+│     │  • Script failure does NOT roll back files      ││
+│     └─────────────────────────────────────────────────┘│
+│                                                         │
+│  6. Git integration (optional):                         │
 │     ┌─────────────────────────────────────────────────┐│
 │     │ a. Stage changed files                          ││
 │     │ b. Generate commit message (AI)                 ││
 │     │ c. Create commit                                ││
 │     └─────────────────────────────────────────────────┘│
 │                                                         │
-│  4. Notify server of applied changes                    │
+│  7. Notify server of applied changes                    │
 │     PATCH /plans/{id}/{branch}/apply                    │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
@@ -1243,6 +1280,375 @@ A post-implementation scan of the CLI identified error conditions not yet surfac
 
 ---
 
+## 13. Progress Reporting System
+
+### 13.1 Overview
+
+The progress reporting system provides real-time, step-level visibility into plan execution. It tracks every phase (initializing → planning → describing → building → applying → validating → completed) and every step within those phases (LLM calls, file reads/writes, tool executions, context loading). Output adapts automatically to the environment: animated progress bars and spinners in a TTY, structured log lines otherwise.
+
+### 13.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       PROGRESS REPORTING SYSTEM                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    Core Data Model (shared/progress.go)               │   │
+│  │                                                                       │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │   │
+│  │  │  StepState │  │  StepKind  │  │    Step    │  │ProgressReport│  │   │
+│  │  │ running    │  │ llm_call   │  │ id, kind   │  │ phase        │  │   │
+│  │  │ completed  │  │ file_read  │  │ state      │  │ steps[]      │  │   │
+│  │  │ failed     │  │ file_write │  │ progress   │  │ counts       │  │   │
+│  │  │ waiting    │  │ tool_exec  │  │ children[] │  │ metrics      │  │   │
+│  │  │ stalled    │  │ validation │  │ timing     │  │ warnings     │  │   │
+│  │  └────────────┘  └────────────┘  └────────────┘  └──────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│              ┌──────────────────────┼──────────────────────┐                │
+│              ▼                      ▼                      ▼                │
+│  ┌───────────────────┐  ┌───────────────────┐  ┌─────────────────────┐    │
+│  │   Tracker         │  │ StreamAdapter     │  │  Pipeline           │    │
+│  │ (tracker.go)      │  │ (stream_adapter)  │  │ (pipeline/pipeline) │    │
+│  │                   │  │                   │  │                     │    │
+│  │ • Event loop      │  │ • Bridges legacy  │  │ • Standalone        │    │
+│  │ • 100ms batching  │  │   StreamMessage   │  │   orchestrator      │    │
+│  │ • Stall detection │  │   → Tracker       │  │ • Callback-driven   │    │
+│  │ • Phase callbacks │  │ • Maps events to  │  │ • UUID step IDs     │    │
+│  │ • Async channel   │  │   phases/steps    │  │ • Per-kind stall    │    │
+│  └────────┬──────────┘  └───────────────────┘  │   thresholds        │    │
+│           │                                     └─────────────────────┘    │
+│           ▼                                                                  │
+│  ┌───────────────────┐                                                      │
+│  │   Renderer        │                                                      │
+│  │ (renderer.go)     │                                                      │
+│  │                   │                                                      │
+│  │ • TTY: ANSI       │                                                      │
+│  │   progress bars,  │                                                      │
+│  │   spinners, color │                                                      │
+│  │ • Non-TTY:        │                                                      │
+│  │   structured logs │                                                      │
+│  └───────────────────┘                                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 13.3 Step Lifecycle
+
+Steps progress through states split into two guarantee tiers:
+
+| Tier | States | Meaning |
+|------|--------|---------|
+| Guaranteed | `completed`, `failed`, `skipped` | Terminal — once set, never changes |
+| Best-effort | `running`, `waiting`, `stalled` | Live indicators; may transition to a guaranteed state |
+
+### 13.4 Stall Detection
+
+Each `StepKind` has an expected-duration threshold. A background ticker compares elapsed time and marks the step as stalled when exceeded:
+
+| Kind | Threshold |
+|------|-----------|
+| `llm_call` | 60 s |
+| `tool_exec` | 60 s |
+| `file_build` | 120 s |
+| `validation` | 30 s |
+| `context` | 10 s |
+| `user_input` | 0 s (immediate) |
+
+### 13.5 Rendering Strategy
+
+| Environment | Output style |
+|-------------|--------------|
+| TTY | Phase header with elapsed time; animated progress bar (█/░); spinning current step; last 3 completed steps; warning indicators |
+| Non-TTY | One structured log line per event: `[TIME] [STATE] PHASE > ICON STEP (detail) [progress] ERROR` |
+
+### 13.6 StreamAdapter Bridge
+
+The `StreamAdapter` translates the backend's `StreamMessage` protocol into `Tracker` calls without modifying either side:
+
+| StreamMessage type | Progress action |
+|--------------------|--------------------|
+| `Start` | Phase → initializing or building |
+| `Reply` | Phase → planning; start/update LLM step |
+| `Describing` | Phase → describing; complete LLM step |
+| `BuildInfo` | Track per-path file build; complete/skip on finish |
+| `LoadContext` | Context loading step with file count |
+| `Finished` | Phase → completed; complete pending steps |
+| `Error` | Phase → failed; fail running steps |
+| `Aborted` | Phase → stopped; skip running steps |
+
+### 13.7 Key Files
+
+```
+app/shared/
+└── progress.go                  # Core types (StepState, StepKind, Step, ProgressReport)
+
+app/cli/progress/
+├── tracker.go                   # State coordinator, event loop, stall detection
+├── renderer.go                  # TTY/non-TTY output formatting
+├── stream_adapter.go            # StreamMessage → Tracker bridge
+└── pipeline/
+    ├── pipeline.go              # Standalone callback-driven orchestrator
+    └── runner.go                # Visual executor with spinner animation
+```
+
+---
+
+## 14. Error Handling & Retry Strategy
+
+### 14.1 Overview
+
+The error handling system provides a multi-layered resilience stack for AI provider interactions. It spans from initial failure classification through adaptive retries, circuit breaking, graceful degradation, dead-lettering, health monitoring, and stream recovery — all coordinated through a unified run journal.
+
+### 14.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     ERROR HANDLING & RETRY STRATEGY                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Layer 1: Failure Classification & Retry                             │   │
+│  │                                                                       │   │
+│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │   │
+│  │  │  RetryPolicy    │    │  RetryState     │    │ IdempotencyMgr  │  │   │
+│  │  │ (retry_policy)  │    │  (retry_policy) │    │ (idempotency)   │  │   │
+│  │  │                 │    │                 │    │                 │  │   │
+│  │  │ • Per-type      │    │ • Attempt log   │    │ • Dedup keys    │  │   │
+│  │  │   policies      │    │ • Delay calc    │    │ • File hashes   │  │   │
+│  │  │ • Exp. backoff  │    │ • ShouldRetry   │    │ • TTL cleanup   │  │   │
+│  │  │ • Jitter        │    │   decision      │    │ • Rollback info │  │   │
+│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Layer 2: Provider Health & Routing                                   │   │
+│  │                                                                       │   │
+│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │   │
+│  │  │ CircuitBreaker  │    │  HealthCheck    │    │  Degradation    │  │   │
+│  │  │ (circuit_br.)   │    │  Manager        │    │  Manager        │  │   │
+│  │  │                 │    │ (health_check)  │    │ (graceful_deg.) │  │   │
+│  │  │ • Closed →      │    │                 │    │                 │  │   │
+│  │  │   Open →        │    │ • Latency       │    │ • 5 levels:     │  │   │
+│  │  │   HalfOpen      │    │   tracking      │    │   None→Critical │  │   │
+│  │  │ • Per-provider  │    │ • Health score  │    │ • Auto-trigger  │  │   │
+│  │  │   state         │    │ • Best provider │    │   from error    │  │   │
+│  │  │ • Failure window│    │   selection     │    │   rate          │  │   │
+│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Layer 3: Recovery & Audit                                            │   │
+│  │                                                                       │   │
+│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │   │
+│  │  │  DeadLetter     │    │   RunJournal    │    │  StreamRecovery │  │   │
+│  │  │  Queue          │    │  (run_journal)  │    │  Manager        │  │   │
+│  │  │ (dead_letter_q) │    │                 │    │ (stream_recov.) │  │   │
+│  │  │                 │    │ • Full audit    │    │                 │  │   │
+│  │  │ • Stores failed │    │   trail         │    │ • Partial       │  │   │
+│  │  │   ops after all │    │ • Retry events  │    │   content       │  │   │
+│  │  │   retries done  │    │ • Circuit events│    │   buffering     │  │   │
+│  │  │ • Auto-retry    │    │ • Checkpoints   │    │ • Token-based   │  │   │
+│  │  │   scheduling    │    │ • Pause/resume  │    │   checkpoints   │  │   │
+│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 14.3 Retry Policies
+
+Pre-defined policies for each retryable failure type:
+
+| Policy | Trigger | Max Attempts | Initial Delay | Backoff |
+|--------|---------|--------------|---------------|---------|
+| `PolicyRateLimit` | HTTP 429 | Provider-specific | Retry-After header | Exponential + jitter |
+| `PolicyOverloaded` | HTTP 503, 529 | 5 | 2 s | 2x |
+| `PolicyServerError` | HTTP 500, 502 | 3 | 1 s | 2x |
+| `PolicyTimeout` | HTTP 504 | 3 | 500 ms | 1.5x |
+| `PolicyConnectionError` | Network failure | 4 | 1 s | 2x |
+| `PolicyStreamInterrupted` | Mid-stream drop | 3 | 500 ms | 1.5x |
+
+### 14.4 Circuit Breaker State Machine
+
+```
+  ┌──────────┐  failures ≥ threshold   ┌──────────┐
+  │  Closed  │ ──────────────────────▶ │   Open   │
+  │          │ ◀───────────────────── │          │
+  └──────────┘   success in HalfOpen  └────┬─────┘
+                                           │ timeout
+                                           ▼
+                                     ┌──────────┐
+                                     │ HalfOpen │
+                                     │ (probe)  │
+                                     └──────────┘
+```
+
+Each provider gets its own circuit. Configurable thresholds: failure count, failure rate within a sliding window, and excluded failure types (e.g., auth errors bypass the circuit).
+
+### 14.5 Graceful Degradation Levels
+
+When error rates climb, the system automatically reduces scope to maintain functionality:
+
+| Level | Context | Timeout | Max Retries | Model Preference |
+|-------|---------|---------|-------------|------------------|
+| None | Full | 1x | Full | Best |
+| Light | 90% | 1.2x | Reduced | Best |
+| Moderate | 70% | 1.5x | 2 | Faster |
+| Heavy | 50% | 2x | 1 | Cheapest |
+| Critical | 30% | 3x | 0 | Fastest |
+
+### 14.6 Idempotency Guarantees
+
+The `IdempotencyManager` prevents duplicate side effects across retries:
+
+1. **Key-based tracking** — each operation is assigned a stable idempotency key before the first attempt
+2. **Status lifecycle** — Pending → InProgress → Completed/Failed/RolledBack
+3. **File change records** — every file modification is logged with before/after hashes for verification
+4. **TTL cleanup** — stale records expire automatically; manual `Remove()` for explicit cleanup
+
+### 14.7 Key Files
+
+```
+app/shared/
+├── retry_policy.go           # Policy definitions, delay calculation, RetryState
+├── retry_policy_test.go      # Test coverage
+├── idempotency.go            # Deduplication, file change records, stats
+├── idempotency_test.go       # Test coverage
+├── run_journal.go            # Execution log: entries, checkpoints, retry events
+└── ai_models_errors.go       # ModelError bridge + fallback routing
+
+app/server/model/
+├── circuit_breaker.go        # Per-provider state machine
+├── circuit_breaker_test.go
+├── dead_letter_queue.go      # Failed operation storage + auto-retry
+├── dead_letter_queue_test.go
+├── graceful_degradation.go   # Adaptive quality reduction
+├── graceful_degradation_test.go
+├── health_check.go           # Proactive monitoring + best-provider selection
+├── health_check_test.go
+├── stream_recovery.go        # Partial stream buffering + checkpoints
+└── ERROR_HANDLING.md         # Subsystem design notes
+```
+
+---
+
+## 15. Atomic Patch Application
+
+### 15.1 Overview
+
+File application is wrapped in a transactional layer that guarantees all-or-nothing semantics. If any operation fails mid-sequence, all previously applied changes in that transaction are rolled back to their pre-transaction state. A write-ahead log (WAL) provides crash recovery, and an optional workspace isolation layer lets changes be staged and reviewed before committing to the project.
+
+### 15.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       ATOMIC PATCH APPLICATION                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Orchestration Layer                                                  │   │
+│  │                                                                       │   │
+│  │  ┌────────────────────────┐    ┌────────────────────────────────┐  │   │
+│  │  │  apply.go              │    │  workspace_apply.go            │  │   │
+│  │  │  (ApplyFiles)          │    │  (ApplyFilesToWorkspace)       │  │   │
+│  │  │                        │    │                                │  │   │
+│  │  │  • Main apply path     │    │  • Workspace-aware adapter     │  │   │
+│  │  │  • Script execution    │    │  • Redirects to isolated dir   │  │   │
+│  │  │  • Git commit          │    │  • Atomic metadata updates     │  │   │
+│  │  └────────────────────────┘    └────────────────────────────────┘  │   │
+│  └──────────────────────────┬──────────────────────────────────────────┘   │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Transaction Engine (file_transaction.go)                             │   │
+│  │                                                                       │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │   │
+│  │  │Snapshots │  │Operations│  │Checkpoints│  │  WAL/Journal       │  │   │
+│  │  │Original  │  │Create    │  │Named      │  │  Crash recovery    │  │   │
+│  │  │content   │  │Modify    │  │restore    │  │  Write-ahead log   │  │   │
+│  │  │captured  │  │Delete    │  │points     │  │  State tracking    │  │   │
+│  │  │at Begin()│  │Rename    │  │           │  │                    │  │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Status & Error Layer                                                 │   │
+│  │                                                                       │   │
+│  │  ┌────────────────────────┐    ┌────────────────────────────────┐  │   │
+│  │  │  PatchStatusReporter   │    │  UnrecoverableErrors           │  │   │
+│  │  │  (patch_status.go)     │    │  (unrecoverable_errors.go)     │  │   │
+│  │  │                        │    │                                │  │   │
+│  │  │  • Per-file events     │    │  • Classifies fatal failures   │  │   │
+│  │  │  • Phase transitions   │    │  • User action guidance        │  │   │
+│  │  │  • Summary counts      │    │  • Partial recovery options    │  │   │
+│  │  └────────────────────────┘    └────────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Workspace Isolation (workspace/manager.go)                           │   │
+│  │                                                                       │   │
+│  │  Create → Activate → [Apply changes] → Commit / Discard             │   │
+│  │                                                                       │   │
+│  │  • Isolated directory tree per plan/branch                            │   │
+│  │  • Commit uses its own transaction for project writes                 │   │
+│  │  • Stale workspace cleanup                                           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 15.3 Transaction Lifecycle
+
+```go
+tx := NewFileTransaction(planId, branch, workDir)
+tx.Begin()                                         // Lock + WAL open
+
+tx.ModifyFile("src/auth.go", newContent)           // Snapshot captured
+tx.CreateFile("src/login.go", content)             // Tracked for rollback
+checkpoint := tx.CreateCheckpoint("after_auth")    // Named restore point
+
+tx.ApplyAll()                                      // Sequential apply
+// On failure anywhere:
+tx.Rollback()                                      // All files restored
+
+// On success:
+tx.Commit()                                        // WAL sealed
+```
+
+### 15.4 Workspace Isolation Flow
+
+1. **Create** — allocates workspace ID; initializes `files/`, `checkpoints/`, `logs/` directories
+2. **Activate** — marks workspace in-use; updates last-accessed time
+3. **Apply** — `ApplyFilesToWorkspace()` writes to workspace directory; metadata updates held pending
+4. **Commit** — `Manager.Commit()` snapshots project files, applies workspace modifications to project sequentially, rolls back on failure, then updates workspace state
+5. **Discard** — marks workspace discarded; optionally deletes directory
+6. **Cleanup** — stale workspaces identified by age and state, removed in batches
+
+### 15.5 Key Files
+
+```
+app/shared/
+├── file_transaction.go          # Transaction engine: snapshots, WAL, checkpoints, rollback
+├── patch_status.go              # PatchStatusReporter interface + LoggingReporter
+├── patch_apply_test.go          # Transaction integration tests
+└── unrecoverable_errors.go      # Fatal error classification with user guidance
+
+app/cli/lib/
+├── apply.go                     # ApplyFiles(), Rollback(), script execution, git commit
+└── workspace_apply.go           # Workspace-aware apply/rollback adapter
+
+app/cli/workspace/
+└── manager.go                   # Workspace lifecycle: create, activate, commit, discard, cleanup
+```
+
+---
+
 ## Appendix A: File Reference
 
 ```
@@ -1263,22 +1669,41 @@ Key Shared Files:
   /app/shared/data_models.go              Core types (15.2 KB)
   /app/shared/ai_models_available.go      Model definitions (29 KB)
   /app/shared/validation.go               Validation framework (types, helpers)
-  /app/shared/ai_models_errors.go         ModelError + ProviderFailureType
+  /app/shared/progress.go                 Progress types (StepState, StepKind, ProgressReport)
+  /app/shared/ai_models_errors.go         ModelError + ProviderFailureType + fallback routing
   /app/shared/provider_failures.go        Failure classification + RetryStrategy defs
+  /app/shared/retry_policy.go             Retry policies + exponential backoff
   /app/shared/retry_config.go             RetryConfig: per-type policy, env loading, backoff math
   /app/shared/operation_safety.go         OperationSafety enum + IsOperationSafe() guard
   /app/shared/retry_context.go            RetryContext: per-attempt tracking + journal bridge
+  /app/shared/idempotency.go              Deduplication across retries
+  /app/shared/file_transaction.go         ACID-like transactional file operations
+  /app/shared/patch_status.go             Per-file status event reporting
   /app/shared/error_registry.go           Persistent error store + StoreWithContext()
-  /app/shared/run_journal.go              Execution journal: RecordRetryAttempt/Outcome
+  /app/shared/run_journal.go              Execution journal: retry/circuit/fallback events, checkpoints
   /app/shared/error_report.go             ErrorReport: root cause + recovery actions
   /app/shared/unrecoverable_errors.go     DetectUnrecoverableCondition() + user templates
 
 Key CLI Validation Files:
   /app/cli/lib/startup_validation.go      Startup + provider validation logic
 
-Key Model Files:
+Key Progress Files:
+  /app/cli/progress/tracker.go            State coordinator + stall detection
+  /app/cli/progress/renderer.go           TTY/non-TTY output formatting
+  /app/cli/progress/stream_adapter.go     StreamMessage → Tracker bridge
+
+Key Model / Error Handling Files (Server):
   /app/server/model/model_error.go        ClassifyModelError() → ProviderFailureType
   /app/server/model/client_stream.go      withStreamingRetries[T] — live retry loop
+  /app/server/model/circuit_breaker.go    Per-provider health state machine
+  /app/server/model/dead_letter_queue.go  Failed operation storage + auto-retry
+  /app/server/model/graceful_degradation.go  Adaptive quality reduction
+  /app/server/model/health_check.go       Proactive monitoring + routing
+
+Key Apply Files:
+  /app/cli/lib/apply.go                   ApplyFiles() + script execution
+  /app/cli/lib/workspace_apply.go         Workspace-aware apply adapter
+  /app/cli/workspace/manager.go           Workspace lifecycle management
 ```
 
 ---
