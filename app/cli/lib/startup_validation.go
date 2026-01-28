@@ -403,12 +403,6 @@ func validateFileOrJSON(result *shared.ValidationResult, envVar, value, provider
 	// Otherwise assume it's base64 — actual decoding is handled at resolve time.
 }
 
-// fileExists is a small helper to check file existence.
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // =============================================================================
 // MUST ENTRY-POINT FOR DEFERRED VALIDATION
 // =============================================================================

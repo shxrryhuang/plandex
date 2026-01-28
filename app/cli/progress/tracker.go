@@ -53,7 +53,7 @@ func NewTracker(cfg TrackerConfig) *Tracker {
 	report := &shared.ProgressReport{
 		PlanID:    cfg.PlanID,
 		Branch:    cfg.Branch,
-		Phase:     shared.PhaseInitializing,
+		Phase:     shared.ProgressPhaseInitializing,
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		Steps:     make([]shared.ProgressStep, 0),

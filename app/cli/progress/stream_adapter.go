@@ -76,14 +76,14 @@ func (a *StreamAdapter) HandleMessage(msg *shared.StreamMessage) {
 func (a *StreamAdapter) handleStart(msg *shared.StreamMessage) {
 	// Starting fresh or reconnecting
 	if msg.InitBuildOnly {
-		a.setPhase(shared.PhaseBuilding, "Building files")
+		a.setPhase(shared.ProgressPhaseBuilding, "Building files")
 	} else {
-		a.setPhase(shared.PhaseInitializing, "Initializing")
+		a.setPhase(shared.ProgressPhaseInitializing, "Initializing")
 	}
 
 	// If there are init replies, we're resuming
 	if len(msg.InitReplies) > 0 {
-		a.setPhase(shared.PhasePlanning, "Resuming planning")
+		a.setPhase(shared.ProgressPhasePlanning, "Resuming planning")
 	}
 }
 
@@ -92,14 +92,14 @@ func (a *StreamAdapter) handleReconnect(msg *shared.StreamMessage) {
 	a.tracker.AddWarning("Reconnected to running plan")
 
 	if msg.InitBuildOnly {
-		a.setPhase(shared.PhaseBuilding, "Building files")
+		a.setPhase(shared.ProgressPhaseBuilding, "Building files")
 	}
 }
 
 func (a *StreamAdapter) handleReply(msg *shared.StreamMessage) {
 	// LLM is responding
-	if a.currentPhase != shared.PhasePlanning {
-		a.setPhase(shared.PhasePlanning, "Planning task")
+	if a.currentPhase != shared.ProgressPhasePlanning {
+		a.setPhase(shared.ProgressPhasePlanning, "Planning task")
 	}
 
 	// Start or update LLM step
@@ -119,13 +119,13 @@ func (a *StreamAdapter) handleReply(msg *shared.StreamMessage) {
 
 func (a *StreamAdapter) handleDescribing(msg *shared.StreamMessage) {
 	// LLM is describing changes
-	if a.currentPhase != shared.PhaseDescribing {
+	if a.currentPhase != shared.ProgressPhaseDescribing {
 		// Complete the planning LLM step
 		if a.llmStepID != "" {
 			a.tracker.CompleteStep(a.llmStepID)
 			a.llmStepID = ""
 		}
-		a.setPhase(shared.PhaseDescribing, "Describing changes")
+		a.setPhase(shared.ProgressPhaseDescribing, "Describing changes")
 	}
 
 	// Could track description progress here
@@ -150,8 +150,8 @@ func (a *StreamAdapter) handleBuildInfo(msg *shared.StreamMessage) {
 	bi := msg.BuildInfo
 
 	// Transition to building phase if needed
-	if a.currentPhase != shared.PhaseBuilding {
-		a.setPhase(shared.PhaseBuilding, "Building files")
+	if a.currentPhase != shared.ProgressPhaseBuilding {
+		a.setPhase(shared.ProgressPhaseBuilding, "Building files")
 	}
 
 	// Get or create step for this file
@@ -211,7 +211,7 @@ func (a *StreamAdapter) handleLoadContext(msg *shared.StreamMessage) {
 
 func (a *StreamAdapter) handleFinished() {
 	// Execution completed successfully
-	a.setPhase(shared.PhaseCompleted, "Completed")
+	a.setPhase(shared.ProgressPhaseCompleted, "Completed")
 
 	// Complete any remaining steps
 	if a.llmStepID != "" {
@@ -224,7 +224,7 @@ func (a *StreamAdapter) handleFinished() {
 
 func (a *StreamAdapter) handleError(msg *shared.StreamMessage) {
 	// Execution failed
-	a.setPhase(shared.PhaseFailed, "Failed")
+	a.setPhase(shared.ProgressPhaseFailed, "Failed")
 
 	errMsg := "unknown error"
 	if msg.Error != nil {
@@ -251,7 +251,7 @@ func (a *StreamAdapter) handleError(msg *shared.StreamMessage) {
 
 func (a *StreamAdapter) handleAborted() {
 	// User stopped execution
-	a.setPhase(shared.PhaseStopped, "Stopped")
+	a.setPhase(shared.ProgressPhaseStopped, "Stopped")
 
 	// Mark running steps as skipped
 	if a.llmStepID != "" {

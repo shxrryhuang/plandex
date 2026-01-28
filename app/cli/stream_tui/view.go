@@ -543,23 +543,23 @@ func (m streamUIModel) getRecentCompletedSteps(n int) []shared.ProgressStep {
 // getPhaseIcon returns an icon for the execution phase
 func (m streamUIModel) getPhaseIcon(phase shared.ProgressPhase) string {
 	switch phase {
-	case shared.PhaseInitializing:
+	case shared.ProgressPhaseInitializing:
 		return "🚀"
-	case shared.PhasePlanning:
+	case shared.ProgressPhasePlanning:
 		return "🧠"
-	case shared.PhaseDescribing:
+	case shared.ProgressPhaseDescribing:
 		return "📝"
-	case shared.PhaseBuilding:
+	case shared.ProgressPhaseBuilding:
 		return "🏗"
-	case shared.PhaseApplying:
+	case shared.ProgressPhaseApplying:
 		return "📦"
-	case shared.PhaseValidating:
+	case shared.ProgressPhaseValidating:
 		return "🔍"
-	case shared.PhaseCompleted:
+	case shared.ProgressPhaseCompleted:
 		return "✅"
-	case shared.PhaseFailed:
+	case shared.ProgressPhaseFailed:
 		return "❌"
-	case shared.PhaseStopped:
+	case shared.ProgressPhaseStopped:
 		return "⏹"
 	default:
 		return "·"

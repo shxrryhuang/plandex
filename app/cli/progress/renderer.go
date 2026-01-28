@@ -350,7 +350,7 @@ func (r *Renderer) renderHelpLine(report *shared.ProgressReport) string {
 
 	actions = append(actions, "(b)ackground")
 
-	if report.Phase != shared.PhaseCompleted && report.Phase != shared.PhaseFailed {
+	if report.Phase != shared.ProgressPhaseCompleted && report.Phase != shared.ProgressPhaseFailed {
 		actions = append(actions, "(j/k) scroll")
 	}
 
@@ -449,23 +449,23 @@ func (r *Renderer) getKindIcon(kind shared.StepKind) string {
 
 func (r *Renderer) getPhaseIcon(phase shared.ProgressPhase) string {
 	switch phase {
-	case shared.PhaseInitializing:
+	case shared.ProgressPhaseInitializing:
 		return iconPhaseInit
-	case shared.PhasePlanning:
+	case shared.ProgressPhasePlanning:
 		return iconPhasePlan
-	case shared.PhaseDescribing:
+	case shared.ProgressPhaseDescribing:
 		return iconPhaseDescribe
-	case shared.PhaseBuilding:
+	case shared.ProgressPhaseBuilding:
 		return iconPhaseBuild
-	case shared.PhaseApplying:
+	case shared.ProgressPhaseApplying:
 		return iconPhaseApply
-	case shared.PhaseValidating:
+	case shared.ProgressPhaseValidating:
 		return iconPhaseValidate
-	case shared.PhaseCompleted:
+	case shared.ProgressPhaseCompleted:
 		return iconPhaseComplete
-	case shared.PhaseFailed:
+	case shared.ProgressPhaseFailed:
 		return iconPhaseFailed
-	case shared.PhaseStopped:
+	case shared.ProgressPhaseStopped:
 		return iconPhaseStopped
 	default:
 		return "·"

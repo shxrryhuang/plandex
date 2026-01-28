@@ -149,35 +149,35 @@ func (s *ProgressStep) IsStalled() bool {
 type ProgressPhase string
 
 const (
-	PhaseInitializing ProgressPhase = "initializing" // Setting up context
-	PhasePlanning     ProgressPhase = "planning"     // LLM reasoning about task
-	PhaseDescribing   ProgressPhase = "describing"   // LLM describing changes
-	PhaseBuilding     ProgressPhase = "building"     // Generating file content
-	PhaseApplying     ProgressPhase = "applying"     // Applying changes
-	PhaseValidating   ProgressPhase = "validating"   // Validating results
-	PhaseCompleted    ProgressPhase = "completed"    // Execution finished
-	PhaseFailed       ProgressPhase = "failed"       // Execution failed
-	PhaseStopped      ProgressPhase = "stopped"      // User stopped execution
+	ProgressPhaseInitializing ProgressPhase = "initializing" // Setting up context
+	ProgressPhasePlanning     ProgressPhase = "planning"     // LLM reasoning about task
+	ProgressPhaseDescribing   ProgressPhase = "describing"   // LLM describing changes
+	ProgressPhaseBuilding     ProgressPhase = "building"     // Generating file content
+	ProgressPhaseApplying     ProgressPhase = "applying"     // Applying changes
+	ProgressPhaseValidating   ProgressPhase = "validating"   // Validating results
+	ProgressPhaseCompleted    ProgressPhase = "completed"    // Execution finished
+	ProgressPhaseFailed       ProgressPhase = "failed"       // Execution failed
+	ProgressPhaseStopped      ProgressPhase = "stopped"      // User stopped execution
 )
 
 // PhaseOrder returns the expected order of this phase (lower = earlier).
 func (p ProgressPhase) PhaseOrder() int {
 	switch p {
-	case PhaseInitializing:
+	case ProgressPhaseInitializing:
 		return 0
-	case PhasePlanning:
+	case ProgressPhasePlanning:
 		return 1
-	case PhaseDescribing:
+	case ProgressPhaseDescribing:
 		return 2
-	case PhaseBuilding:
+	case ProgressPhaseBuilding:
 		return 3
-	case PhaseApplying:
+	case ProgressPhaseApplying:
 		return 4
-	case PhaseValidating:
+	case ProgressPhaseValidating:
 		return 5
-	case PhaseCompleted:
+	case ProgressPhaseCompleted:
 		return 6
-	case PhaseFailed, PhaseStopped:
+	case ProgressPhaseFailed, ProgressPhaseStopped:
 		return 7
 	default:
 		return 99

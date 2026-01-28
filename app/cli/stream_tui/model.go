@@ -239,7 +239,7 @@ func initialModel(prestartReply, prompt string, buildOnly bool, canSendToBg bool
 // newProgressReport creates an initialized progress report
 func newProgressReport() *shared.ProgressReport {
 	return &shared.ProgressReport{
-		Phase:      shared.PhaseInitializing,
+		Phase:      shared.ProgressPhaseInitializing,
 		PhaseLabel: "Initializing",
 		StartedAt:  time.Now(),
 		UpdatedAt:  time.Now(),

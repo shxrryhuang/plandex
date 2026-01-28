@@ -47,7 +47,7 @@ func TestFromProviderFailure_RateLimit(t *testing.T) {
 		Phase:           PhaseStreaming,
 	}
 
-	report := FromProviderFailure(failure, stepCtx)
+	report := ErrorReportFromProviderFailure(failure, stepCtx)
 
 	// Check root cause
 	if report.RootCause.Category != ErrorCategoryProvider {
@@ -89,7 +89,7 @@ func TestFromProviderFailure_QuotaExhausted(t *testing.T) {
 		Provider: "openai",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 
 	// Check recovery - should NOT auto-recover
 	if report.Recovery.CanAutoRecover {
@@ -122,7 +122,7 @@ func TestFromProviderFailure_ContextTooLong(t *testing.T) {
 		Provider: "anthropic",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 
 	// Should not auto-recover
 	if report.Recovery.CanAutoRecover {
@@ -269,7 +269,7 @@ func TestErrorReportFormat(t *testing.T) {
 		},
 	}
 
-	report := FromProviderFailure(failure, stepCtx)
+	report := ErrorReportFromProviderFailure(failure, stepCtx)
 	formatted := report.Format()
 
 	// Check that key sections are present

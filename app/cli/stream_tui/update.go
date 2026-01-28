@@ -408,13 +408,13 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.updateState(func() {
 				m.buildOnly = true
 			})
-			m.progressSetPhase(shared.PhaseBuilding, "Building files")
+			m.progressSetPhase(shared.ProgressPhaseBuilding, "Building files")
 		}
 		if len(msg.InitReplies) > 0 {
 			m.updateState(func() {
 				m.reply = strings.Join(msg.InitReplies, "\n\n👇\n\n")
 			})
-			m.progressSetPhase(shared.PhasePlanning, "Resuming planning")
+			m.progressSetPhase(shared.ProgressPhasePlanning, "Resuming planning")
 		}
 		m.updateReplyDisplay()
 		return m.checkMissingFile(msg)
@@ -435,7 +435,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 				m.starting = false
 			})
 			// Start LLM tracking step
-			m.progressSetPhase(shared.PhasePlanning, "Planning task")
+			m.progressSetPhase(shared.ProgressPhasePlanning, "Planning task")
 			// Note: progressStartStep must be called outside updateState to avoid deadlock
 			llmID := m.progressStartStep(shared.StepKindLLMCall, "Calling LLM", "streaming")
 			m.updateState(func() {
@@ -483,7 +483,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 
 		// Transition to building phase
 		if !state.building {
-			m.progressSetPhase(shared.PhaseBuilding, "Building files")
+			m.progressSetPhase(shared.ProgressPhaseBuilding, "Building files")
 			// Complete LLM step if active
 			if m.progressLLMID != "" {
 				m.progressCompleteStep(m.progressLLMID)
@@ -580,7 +580,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.processing = true
 		})
 		// Transition to describing phase
-		m.progressSetPhase(shared.PhaseDescribing, "Describing changes")
+		m.progressSetPhase(shared.ProgressPhaseDescribing, "Describing changes")
 		// Complete LLM step if active
 		if m.progressLLMID != "" {
 			m.progressCompleteStep(m.progressLLMID)
@@ -617,7 +617,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 		}
 
 		// Update progress to failed state
-		m.progressSetPhase(shared.PhaseFailed, "Failed")
+		m.progressSetPhase(shared.ProgressPhaseFailed, "Failed")
 		errMsg := "unknown error"
 		if msg.Error != nil {
 			errMsg = msg.Error.Msg
@@ -646,7 +646,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 
 	case shared.StreamMessageFinished:
 		// Update progress to completed state
-		m.progressSetPhase(shared.PhaseCompleted, "Completed")
+		m.progressSetPhase(shared.ProgressPhaseCompleted, "Completed")
 		// Complete any remaining steps
 		if m.progressLLMID != "" {
 			m.progressCompleteStep(m.progressLLMID)
@@ -662,7 +662,7 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 
 	case shared.StreamMessageAborted:
 		// Update progress to stopped state
-		m.progressSetPhase(shared.PhaseStopped, "Stopped")
+		m.progressSetPhase(shared.ProgressPhaseStopped, "Stopped")
 		// Skip active steps
 		if m.progressLLMID != "" {
 			m.progressSkipStep(m.progressLLMID)

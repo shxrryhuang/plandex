@@ -17,10 +17,10 @@ func TestPipelineBasic(t *testing.T) {
 	defer p.Stop()
 
 	// Test phase setting
-	p.SetPhase(shared.PhasePlanning, "Planning")
+	p.SetPhase(shared.ProgressPhasePlanning, "Planning")
 	report := p.GetReport()
-	if report.Phase != shared.PhasePlanning {
-		t.Errorf("expected phase %s, got %s", shared.PhasePlanning, report.Phase)
+	if report.Phase != shared.ProgressPhasePlanning {
+		t.Errorf("expected phase %s, got %s", shared.ProgressPhasePlanning, report.Phase)
 	}
 
 	// Test step creation
@@ -133,14 +133,14 @@ func TestPipelineCallbacks(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	p.SetPhase(shared.PhasePlanning, "Planning")
+	p.SetPhase(shared.ProgressPhasePlanning, "Planning")
 	stepID := p.StartStep(shared.StepKindLLMCall, "LLM", "test")
 	p.CompleteStep(stepID)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(phaseChanges) != 1 || phaseChanges[0] != shared.PhasePlanning {
+	if len(phaseChanges) != 1 || phaseChanges[0] != shared.ProgressPhasePlanning {
 		t.Errorf("phase change callback not called correctly")
 	}
 	if len(stepStarts) != 1 {
@@ -168,8 +168,8 @@ func TestMockStreamNormal(t *testing.T) {
 	}
 
 	report := p.GetReport()
-	if report.Phase != shared.PhaseCompleted {
-		t.Errorf("expected phase %s, got %s", shared.PhaseCompleted, report.Phase)
+	if report.Phase != shared.ProgressPhaseCompleted {
+		t.Errorf("expected phase %s, got %s", shared.ProgressPhaseCompleted, report.Phase)
 	}
 
 	// Check we have some completed steps
@@ -201,8 +201,8 @@ func TestMockStreamFailure(t *testing.T) {
 	}
 
 	report := p.GetReport()
-	if report.Phase != shared.PhaseFailed {
-		t.Errorf("expected phase %s, got %s", shared.PhaseFailed, report.Phase)
+	if report.Phase != shared.ProgressPhaseFailed {
+		t.Errorf("expected phase %s, got %s", shared.ProgressPhaseFailed, report.Phase)
 	}
 
 	// Check we have a failed step

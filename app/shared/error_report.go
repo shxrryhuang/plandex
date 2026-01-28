@@ -248,8 +248,8 @@ func NewErrorReport(category ErrorCategory, errorType, code, message string) *Er
 	}
 }
 
-// FromProviderFailure creates an error report from a provider failure
-func FromProviderFailure(failure *ProviderFailure, stepCtx *StepContext) *ErrorReport {
+// ErrorReportFromProviderFailure creates an error report from a provider failure
+func ErrorReportFromProviderFailure(failure *ProviderFailure, stepCtx *StepContext) *ErrorReport {
 	report := NewErrorReport(
 		ErrorCategoryProvider,
 		string(failure.Type),

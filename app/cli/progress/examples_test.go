@@ -29,7 +29,7 @@ func testNormalExecution(t *testing.T) {
 	report := &shared.ProgressReport{
 		PlanID:     "plan-123",
 		Branch:     "main",
-		Phase:      shared.PhaseBuilding,
+		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-72 * time.Second),
 		Steps: []shared.Step{
@@ -91,7 +91,7 @@ func testSlowLLMCall(t *testing.T) {
 	report := &shared.ProgressReport{
 		PlanID:     "plan-456",
 		Branch:     "feature/auth",
-		Phase:      shared.PhasePlanning,
+		Phase:      shared.ProgressPhasePlanning,
 		PhaseLabel: "Planning task",
 		StartedAt:  time.Now().Add(-105 * time.Second),
 		Steps: []shared.Step{
@@ -133,7 +133,7 @@ func testStalledOperation(t *testing.T) {
 	report := &shared.ProgressReport{
 		PlanID:     "plan-789",
 		Branch:     "main",
-		Phase:      shared.PhasePlanning,
+		Phase:      shared.ProgressPhasePlanning,
 		PhaseLabel: "Planning task",
 		StartedAt:  time.Now().Add(-150 * time.Second),
 		Steps: []shared.Step{
@@ -176,7 +176,7 @@ func testFailureScenario(t *testing.T) {
 	report := &shared.ProgressReport{
 		PlanID:     "plan-fail",
 		Branch:     "main",
-		Phase:      shared.PhaseBuilding,
+		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-32 * time.Second),
 		Steps: []shared.Step{
@@ -239,7 +239,7 @@ func testUserInputWaiting(t *testing.T) {
 	report := &shared.ProgressReport{
 		PlanID:     "plan-input",
 		Branch:     "main",
-		Phase:      shared.PhaseBuilding,
+		Phase:      shared.ProgressPhaseBuilding,
 		PhaseLabel: "Building files",
 		StartedAt:  time.Now().Add(-45 * time.Second),
 		Steps: []shared.Step{

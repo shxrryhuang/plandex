@@ -500,15 +500,15 @@ func (m *MockStream) runMixedScenario() error {
 
 // Helper constants for phase and step kinds (re-exported for convenience)
 const (
-	PhaseInitializing = shared.PhaseInitializing
-	PhasePlanning     = shared.PhasePlanning
-	PhaseDescribing   = shared.PhaseDescribing
-	PhaseBuilding     = shared.PhaseBuilding
-	PhaseApplying     = shared.PhaseApplying
-	PhaseValidating   = shared.PhaseValidating
-	PhaseCompleted    = shared.PhaseCompleted
-	PhaseFailed       = shared.PhaseFailed
-	PhaseStopped      = shared.PhaseStopped
+	PhaseInitializing = shared.ProgressPhaseInitializing
+	PhasePlanning     = shared.ProgressPhasePlanning
+	PhaseDescribing   = shared.ProgressPhaseDescribing
+	PhaseBuilding     = shared.ProgressPhaseBuilding
+	PhaseApplying     = shared.ProgressPhaseApplying
+	PhaseValidating   = shared.ProgressPhaseValidating
+	PhaseCompleted    = shared.ProgressPhaseCompleted
+	PhaseFailed       = shared.ProgressPhaseFailed
+	PhaseStopped      = shared.ProgressPhaseStopped
 
 	StepKindLLMCall    = shared.StepKindLLMCall
 	StepKindContext    = shared.StepKindContext

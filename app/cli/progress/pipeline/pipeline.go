@@ -75,7 +75,7 @@ func New(config PipelineConfig) *Pipeline {
 		ctx:      ctx,
 		cancel:   cancel,
 		report: &shared.ProgressReport{
-			Phase:     shared.PhaseInitializing,
+			Phase:     shared.ProgressPhaseInitializing,
 			StartedAt: time.Now(),
 			Steps:     []shared.ProgressStep{},
 		},
@@ -294,7 +294,7 @@ func (p *Pipeline) GetStep(id string) (shared.ProgressStep, bool) {
 
 // Complete marks the entire pipeline as completed
 func (p *Pipeline) Complete() {
-	p.SetPhase(shared.PhaseCompleted, "Completed")
+	p.SetPhase(shared.ProgressPhaseCompleted, "Completed")
 	p.mu.Lock()
 	p.report.CompletedAt = time.Now()
 	report := *p.report
@@ -307,7 +307,7 @@ func (p *Pipeline) Complete() {
 
 // Fail marks the entire pipeline as failed
 func (p *Pipeline) Fail(err error) {
-	p.SetPhase(shared.PhaseFailed, "Failed")
+	p.SetPhase(shared.ProgressPhaseFailed, "Failed")
 	p.mu.Lock()
 	p.report.CompletedAt = time.Now()
 	if err != nil {

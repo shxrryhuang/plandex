@@ -68,7 +68,7 @@ func TestDetectUnrecoverableCondition_QuotaExhausted(t *testing.T) {
 		Provider: "openai",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 	unrecoverable := DetectUnrecoverableCondition(report)
 
 	if unrecoverable == nil {
@@ -97,7 +97,7 @@ func TestDetectUnrecoverableCondition_AuthInvalid(t *testing.T) {
 		Provider: "anthropic",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 	unrecoverable := DetectUnrecoverableCondition(report)
 
 	if unrecoverable == nil {
@@ -122,7 +122,7 @@ func TestDetectUnrecoverableCondition_ContextTooLong(t *testing.T) {
 		Provider: "openai",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 	unrecoverable := DetectUnrecoverableCondition(report)
 
 	if unrecoverable == nil {
@@ -148,7 +148,7 @@ func TestDetectUnrecoverableCondition_ContentPolicy(t *testing.T) {
 		Provider: "openai",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 	unrecoverable := DetectUnrecoverableCondition(report)
 
 	if unrecoverable == nil {
@@ -169,7 +169,7 @@ func TestDetectUnrecoverableCondition_RetryableIsRecoverable(t *testing.T) {
 		Provider: "openai",
 	}
 
-	report := FromProviderFailure(failure, nil)
+	report := ErrorReportFromProviderFailure(failure, nil)
 	unrecoverable := DetectUnrecoverableCondition(report)
 
 	if unrecoverable != nil {
