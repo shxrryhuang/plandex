@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"plandex-cli/fs"
 	"plandex-cli/types"
 	"strings"
 	"testing"
@@ -14,10 +15,17 @@ func TestApplyFilesWithTransaction_Success(t *testing.T) {
 	// Create temporary directory
 	tmpDir := t.TempDir()
 
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	// Create test files
 	toApply := map[string]string{
-		"file1.txt": "content1",
-		"file2.txt": "content2",
+		"file1.txt":     "content1",
+		"file2.txt":     "content2",
 		"dir/file3.txt": "content3",
 	}
 	toRemove := map[string]bool{}
@@ -25,12 +33,6 @@ func TestApplyFilesWithTransaction_Success(t *testing.T) {
 	projectPaths := &types.ProjectPaths{
 		AllPaths: make(map[string]bool),
 	}
-
-	// Override ProjectRoot for this test
-	originalRoot := tmpDir
-	defer func() {
-		// Cleanup happens automatically with t.TempDir()
-	}()
 
 	// Apply files
 	updatedFiles, err := ApplyFilesWithTransaction("test-plan", "main", toApply, toRemove, projectPaths)
@@ -60,6 +62,13 @@ func TestApplyFilesWithTransaction_Success(t *testing.T) {
 // TestApplyFilesWithTransaction_ModifyExisting tests modifying existing files
 func TestApplyFilesWithTransaction_ModifyExisting(t *testing.T) {
 	tmpDir := t.TempDir()
+
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
 
 	// Create initial file
 	initialPath := filepath.Join(tmpDir, "existing.txt")
@@ -101,6 +110,13 @@ func TestApplyFilesWithTransaction_ModifyExisting(t *testing.T) {
 func TestApplyFilesWithTransaction_Delete(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	// Create file to delete
 	filePath := filepath.Join(tmpDir, "todelete.txt")
 	if err := os.WriteFile(filePath, []byte("delete me"), 0644); err != nil {
@@ -132,6 +148,13 @@ func TestApplyFilesWithTransaction_Delete(t *testing.T) {
 // TestApplyFilesWithTransaction_MixedOperations tests create, modify, and delete together
 func TestApplyFilesWithTransaction_MixedOperations(t *testing.T) {
 	tmpDir := t.TempDir()
+
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
 
 	// Create initial file to modify
 	modifyPath := filepath.Join(tmpDir, "modify.txt")
@@ -191,6 +214,13 @@ func TestApplyFilesWithTransaction_MixedOperations(t *testing.T) {
 func TestApplyFilesWithTransaction_EmptyOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	toApply := map[string]string{}
 	toRemove := map[string]bool{}
 	projectPaths := &types.ProjectPaths{
@@ -206,8 +236,6 @@ func TestApplyFilesWithTransaction_EmptyOperations(t *testing.T) {
 	if len(updatedFiles) != 0 {
 		t.Errorf("Expected 0 updated files, got %d", len(updatedFiles))
 	}
-
-	_ = tmpDir // Silence unused warning
 }
 
 // TestApplyFilesWithTransaction_LargeFileSet tests performance with many files
@@ -217,6 +245,13 @@ func TestApplyFilesWithTransaction_LargeFileSet(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
+
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
 
 	// Create 100 files
 	toApply := make(map[string]string)
@@ -293,6 +328,13 @@ func TestFileExists(t *testing.T) {
 func TestApplyFilesWithTransaction_SkipApplyScript(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	toApply := map[string]string{
 		"regular.txt": "content",
 		"_apply.sh":   "#!/bin/bash\necho 'test'",
@@ -332,6 +374,13 @@ func TestApplyFilesWithTransaction_SkipApplyScript(t *testing.T) {
 func TestApplyFilesWithTransaction_EscapedBackticks(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Set fs.ProjectRoot to temp directory for this test
+	originalRoot := fs.ProjectRoot
+	fs.ProjectRoot = tmpDir
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	toApply := map[string]string{
 		"code.md": "Here is some code: \\`\\`\\`go\nfunc main() {}\n\\`\\`\\`",
 	}
@@ -370,9 +419,15 @@ func BenchmarkApplyFilesWithTransaction_SmallPatch(b *testing.B) {
 		AllPaths: make(map[string]bool),
 	}
 
+	originalRoot := fs.ProjectRoot
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tmpDir := b.TempDir()
+		fs.ProjectRoot = tmpDir
 		_, err := ApplyFilesWithTransaction("bench-plan", "main", toApply, map[string]bool{}, projectPaths)
 		if err != nil {
 			b.Fatalf("Benchmark failed: %v", err)
@@ -390,9 +445,15 @@ func BenchmarkApplyFilesWithTransaction_LargePatch(b *testing.B) {
 		AllPaths: make(map[string]bool),
 	}
 
+	originalRoot := fs.ProjectRoot
+	defer func() {
+		fs.ProjectRoot = originalRoot
+	}()
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tmpDir := b.TempDir()
+		fs.ProjectRoot = tmpDir
 		_, err := ApplyFilesWithTransaction("bench-plan", "main", toApply, map[string]bool{}, projectPaths)
 		if err != nil {
 			b.Fatalf("Benchmark failed: %v", err)

@@ -126,8 +126,10 @@ func applyOperationsWithProgress(tx *shared.FileTransaction) ([]string, error) {
 
 	// Apply operations with progress feedback
 	err := tx.ApplyAllWithProgress(func(op *shared.FileOperation, current, total int) {
-		// Track updated files
-		updatedFiles = append(updatedFiles, op.Path)
+		// Track updated files (only creates and modifies, not deletes)
+		if op.Type != shared.FileOpDelete {
+			updatedFiles = append(updatedFiles, op.Path)
+		}
 
 		// Show progress to user
 		term.StopSpinner()

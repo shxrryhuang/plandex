@@ -141,10 +141,14 @@ func TestTransactionRollback_OnFileError(t *testing.T) {
 	}
 
 	// Verify the failed file was not created
+	// Note: We can't stat inside a 0444 directory, but we can verify by
+	// temporarily changing permissions
+	os.Chmod(readOnlyDir, 0755)
 	failPath := filepath.Join(readOnlyDir, "fail.txt")
 	if _, err := os.Stat(failPath); !os.IsNotExist(err) {
 		t.Error("fail.txt should not exist after rollback")
 	}
+	os.Chmod(readOnlyDir, 0444) // Restore for consistency
 }
 
 // TestTransactionRollback_RestoresContent tests that rollback perfectly restores original content
