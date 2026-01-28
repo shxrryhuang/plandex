@@ -127,7 +127,7 @@ func (r *Runner) onPhaseChange(phase shared.ProgressPhase, label string) {
 	}
 }
 
-func (r *Runner) onStepStart(step *shared.Step) {
+func (r *Runner) onStepStart(step *shared.ProgressStep) {
 	if r.isTTY {
 		icon := r.getKindIcon(step.Kind)
 		spinner := color.CyanString(r.getSpinner())
@@ -141,7 +141,7 @@ func (r *Runner) onStepStart(step *shared.Step) {
 	}
 }
 
-func (r *Runner) onStepUpdate(step *shared.Step) {
+func (r *Runner) onStepUpdate(step *shared.ProgressStep) {
 	if !r.isTTY {
 		extra := ""
 		if step.TokensProcessed > 0 {
@@ -152,7 +152,7 @@ func (r *Runner) onStepUpdate(step *shared.Step) {
 	// In TTY mode, spinner handles visual updates
 }
 
-func (r *Runner) onStepEnd(step *shared.Step) {
+func (r *Runner) onStepEnd(step *shared.ProgressStep) {
 	if r.isTTY {
 		icon := r.getKindIcon(step.Kind)
 		stateIcon := r.getStateIcon(step.State)
@@ -182,7 +182,7 @@ func (r *Runner) onStepEnd(step *shared.Step) {
 	}
 }
 
-func (r *Runner) onStall(step *shared.Step) {
+func (r *Runner) onStall(step *shared.ProgressStep) {
 	if r.isTTY {
 		icon := r.getKindIcon(step.Kind)
 		stateIcon := color.New(color.FgRed, color.Bold).Sprint("⚠")

@@ -288,7 +288,7 @@ func (r *Renderer) renderProgressBar(completed, total, width int) string {
 }
 
 // renderStep formats a single step for display.
-func (r *Renderer) renderStep(step *shared.Step, spinner string, isCurrent bool) string {
+func (r *Renderer) renderStep(step *shared.ProgressStep, spinner string, isCurrent bool) string {
 	stateIcon := r.getStateIcon(step.State)
 	kindIcon := r.getKindIcon(step.Kind)
 	stateColor := r.getStateColor(step.State)
@@ -485,8 +485,8 @@ func (r *Renderer) formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
-func (r *Renderer) getRecentCompletedSteps(steps []shared.Step, n int) []shared.Step {
-	var completed []shared.Step
+func (r *Renderer) getRecentCompletedSteps(steps []shared.ProgressStep, n int) []shared.ProgressStep {
+	var completed []shared.ProgressStep
 	for i := len(steps) - 1; i >= 0 && len(completed) < n; i-- {
 		if steps[i].State.IsTerminal() {
 			completed = append(completed, steps[i])

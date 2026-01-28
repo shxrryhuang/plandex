@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"plandex-cli/term"
 	shared "plandex-shared"
 
 	bubbleKey "github.com/charmbracelet/bubbles/key"
@@ -86,13 +87,18 @@ type streamUIModel struct {
 	buildViewCollapsed bool
 	userToggledBuild   bool
 
-	// Progress tracking
+	// Progress tracking (ProgressReport-based legacy fields)
 	progressReport    *shared.ProgressReport
 	progressStepSeq   int
 	progressBuildIDs  map[string]string // path -> stepID
 	progressLLMID     string
 	progressContextID string
 	showProgressView  bool // Toggle between classic and progress view with 'p'
+
+	// Progress reporting: adapter translates stream messages into structured
+	// phase/step state; renderer produces the phase bar shown in the view.
+	progressAdapter  *ProgressAdapter
+	progressRenderer *term.ProgressRenderer
 }
 
 type keymap = struct {
@@ -223,6 +229,8 @@ func initialModel(prestartReply, prompt string, buildOnly bool, canSendToBg bool
 		progressBuildIDs: make(map[string]string),
 		progressReport:   newProgressReport(),
 		showProgressView: true,
+		progressAdapter:  NewProgressAdapter(),
+		progressRenderer: term.NewProgressRenderer(),
 	}
 
 	return &initialState
@@ -235,7 +243,7 @@ func newProgressReport() *shared.ProgressReport {
 		PhaseLabel: "Initializing",
 		StartedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
-		Steps:      make([]shared.Step, 0),
+		Steps:      make([]shared.ProgressStep, 0),
 		CanCancel:  true,
 	}
 }
@@ -251,6 +259,9 @@ func (m *streamUIModel) cleanup() {
 	log.Println("Cleaning up stream UI model")
 	m.updateState(func() {
 		m.sharedTicker.Stop()
+		if m.progressAdapter != nil {
+			m.progressAdapter.Shutdown()
+		}
 	})
 }
 

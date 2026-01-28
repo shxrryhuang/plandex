@@ -278,10 +278,9 @@ func (m *streamUIModel) getViewportDimensions() (int, int) {
 		}
 	}
 
-	var processingHeight int
-	if m.starting || m.processing {
-		processingHeight = lipgloss.Height(m.renderProcessing())
-	}
+	// Use the cheap line-count estimate rather than a full render so that
+	// getViewportDimensions stays O(1) on every chunk/tick.
+	processingHeight := m.progressHeight()
 
 	maxViewportHeight := h - (helpHeight + processingHeight + buildHeight)
 	if maxViewportHeight < 0 {
@@ -374,6 +373,14 @@ func (m *streamUIModel) scrollEnd() {
 }
 
 func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bool) (tea.Model, tea.Cmd) {
+	// Feed every stream message into the progress adapter so the phase bar
+	// and stall detector stay in sync with the server state.  This runs
+	// before the existing per-type handling so the progress model is always
+	// up to date when the view renders.
+	if m.progressAdapter != nil {
+		m.progressAdapter.OnMessage(msg)
+	}
+
 	switch msg.Type {
 
 	case shared.StreamMessageMulti:
@@ -939,7 +946,7 @@ func (m *streamUIModel) progressStartStep(kind shared.StepKind, label, detail st
 		m.progressStepSeq++
 		id = fmt.Sprintf("step-%d", m.progressStepSeq)
 
-		step := shared.Step{
+		step := shared.ProgressStep{
 			ID:        id,
 			Kind:      kind,
 			State:     shared.StepStateRunning,

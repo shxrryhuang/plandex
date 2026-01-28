@@ -3,6 +3,7 @@ package shared
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -96,8 +97,8 @@ func (k StepKind) ExpectedDuration() time.Duration {
 	}
 }
 
-// Step represents a single unit of work in plan execution.
-type Step struct {
+// ProgressStep represents a single unit of work in plan execution (ProgressReport system).
+type ProgressStep struct {
 	ID          string    `json:"id"`
 	Kind        StepKind  `json:"kind"`
 	State       StepState `json:"state"`
@@ -112,8 +113,8 @@ type Step struct {
 	ProgressMsg string  `json:"progressMsg,omitempty"`
 
 	// For nested operations
-	ParentID string `json:"parentId,omitempty"`
-	Children []Step `json:"children,omitempty"`
+	ParentID string              `json:"parentId,omitempty"`
+	Children []ProgressStep      `json:"children,omitempty"`
 
 	// Metrics
 	TokensProcessed int `json:"tokensProcessed,omitempty"`
@@ -121,7 +122,7 @@ type Step struct {
 }
 
 // Duration returns the elapsed time for this step.
-func (s *Step) Duration() time.Duration {
+func (s *ProgressStep) Duration() time.Duration {
 	if s.StartedAt.IsZero() {
 		return 0
 	}
@@ -132,7 +133,7 @@ func (s *Step) Duration() time.Duration {
 }
 
 // IsStalled returns true if the step has been running longer than expected.
-func (s *Step) IsStalled() bool {
+func (s *ProgressStep) IsStalled() bool {
 	if s.State != StepStateRunning && s.State != StepStateWaiting {
 		return false
 	}
@@ -194,8 +195,8 @@ type ProgressReport struct {
 	CompletedAt time.Time      `json:"completedAt,omitempty"`
 
 	// Step tracking
-	Steps         []Step `json:"steps"`
-	CurrentStepID string `json:"currentStepId,omitempty"`
+	Steps         []ProgressStep `json:"steps"`
+	CurrentStepID string         `json:"currentStepId,omitempty"`
 
 	// Summary counts
 	TotalSteps     int `json:"totalSteps"`
@@ -219,7 +220,7 @@ type ProgressReport struct {
 }
 
 // CurrentStep returns the currently active step, if any.
-func (r *ProgressReport) CurrentStep() *Step {
+func (r *ProgressReport) CurrentStep() *ProgressStep {
 	for i := range r.Steps {
 		if r.Steps[i].ID == r.CurrentStepID {
 			return &r.Steps[i]
@@ -295,8 +296,8 @@ func (r *ProgressReport) ToJSON() string {
 // ProgressMessage is sent over the stream to update progress state.
 type ProgressMessage struct {
 	Type      ProgressMessageType `json:"type"`
-	Step      *Step               `json:"step,omitempty"`
-	Phase     ProgressPhase      `json:"phase,omitempty"`
+	Step      *ProgressStep       `json:"step,omitempty"`
+	Phase     ProgressPhase       `json:"phase,omitempty"`
 	Report    *ProgressReport     `json:"report,omitempty"`
 	Timestamp time.Time           `json:"timestamp"`
 }
@@ -311,3 +312,340 @@ const (
 	ProgressMsgFullReport  ProgressMessageType = "full_report"
 	ProgressMsgHeartbeat   ProgressMessageType = "heartbeat"
 )
+
+// =============================================================================
+// PROGRESS MODEL
+//
+// Two-tier confidence model for CLI progress reporting:
+//
+//   Guaranteed State  — steps that have completed or failed. These are facts
+//                       sourced from server confirmations. They never regress.
+//
+//   Best-Effort       — steps currently running or waiting. The system believes
+//                       they are in progress, but has not yet received a terminal
+//                       confirmation. A heartbeat timeout or connection drop can
+//                       cause these to revert to "stalled".
+//
+// This distinction lets the user make informed decisions:
+//   • Guaranteed = safe to act on (logs, retries, etc.)
+//   • Best-effort = informational only; treat as "probably fine"
+//
+// =============================================================================
+
+// PhaseID identifies a top-level execution phase.
+type PhaseID string
+
+const (
+	PhaseConnect      PhaseID = "connect"       // Establishing server connection
+	PhaseContext      PhaseID = "context"       // Loading / auto-loading context files
+	PhaseModel        PhaseID = "model"         // Sending prompt, receiving streamed reply
+	PhaseBuild        PhaseID = "build"         // Generating file edits from reply
+	PhaseApply        PhaseID = "apply"         // Writing files / running commands
+	PhaseFinalize     PhaseID = "finalize"      // Cleanup, summary generation
+)
+
+// AllPhases is the canonical ordering of execution phases.
+var AllPhases = []PhaseID{
+	PhaseConnect,
+	PhaseContext,
+	PhaseModel,
+	PhaseBuild,
+	PhaseApply,
+	PhaseFinalize,
+}
+
+// PhaseLabel returns a human-readable label for a phase.
+func (p PhaseID) PhaseLabel() string {
+	switch p {
+	case PhaseConnect:
+		return "connect"
+	case PhaseContext:
+		return "context"
+	case PhaseModel:
+		return "model"
+	case PhaseBuild:
+		return "build"
+	case PhaseApply:
+		return "apply"
+	case PhaseFinalize:
+		return "finalize"
+	default:
+		return string(p)
+	}
+}
+
+// StepStatus represents the execution state of a single step.
+type StepStatus string
+
+const (
+	StepPending   StepStatus = "pending"   // Not yet started
+	StepRunning   StepStatus = "running"   // In progress (best-effort)
+	StepCompleted StepStatus = "completed" // Confirmed finished (guaranteed)
+	StepFailed    StepStatus = "failed"    // Confirmed failed (guaranteed)
+	StepSkipped   StepStatus = "skipped"   // Intentionally skipped
+	StepStalled   StepStatus = "stalled"   // Was running but no recent heartbeat
+)
+
+// IsTerminal returns true if the status is a final state (guaranteed).
+func (s StepStatus) IsTerminal() bool {
+	return s == StepCompleted || s == StepFailed || s == StepSkipped
+}
+
+// IsGuaranteed returns true if this status represents confirmed server state.
+func (s StepStatus) IsGuaranteed() bool {
+	return s == StepCompleted || s == StepFailed || s == StepSkipped
+}
+
+// Confidence indicates how reliable a status observation is.
+type Confidence int
+
+const (
+	ConfidenceGuaranteed Confidence = iota // Server confirmed; immutable
+	ConfidenceBestEffort                   // Client-side inference; may change
+)
+
+// Step is a single unit of work within a phase.
+type Step struct {
+	ID          string     `json:"id"`
+	Phase       PhaseID    `json:"phase"`
+	Label       string     `json:"label"`
+	Status      StepStatus `json:"status"`
+	Confidence  Confidence `json:"confidence"`
+	Detail      string     `json:"detail,omitempty"`   // e.g. file path, token count
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+	DurationMs  int64      `json:"durationMs,omitempty"`
+	Error       string     `json:"error,omitempty"`
+}
+
+// Duration returns elapsed time for running steps, or recorded duration for
+// completed steps.
+func (s *Step) Duration() time.Duration {
+	if s.FinishedAt != nil && s.StartedAt != nil {
+		return s.FinishedAt.Sub(*s.StartedAt)
+	}
+	if s.StartedAt != nil {
+		return time.Since(*s.StartedAt)
+	}
+	return 0
+}
+
+// Progress is the full snapshot of execution state at a point in time.
+// The CLI renders this into terminal output; structured loggers serialize it
+// directly.
+type Progress struct {
+	// Current phase the plan is executing
+	ActivePhase PhaseID `json:"activePhase"`
+
+	// Ordered list of all steps recorded so far
+	Steps []*Step `json:"steps"`
+
+	// Wall-clock start of the entire run
+	StartedAt time.Time `json:"startedAt"`
+
+	// Last heartbeat received from the server (nil = no heartbeat yet)
+	LastHeartbeat *time.Time `json:"lastHeartbeat,omitempty"`
+
+	// Terminal status if the run is done
+	Finished bool   `json:"finished"`
+	Error    string `json:"error,omitempty"`
+}
+
+// NewProgress creates a fresh Progress snapshot at the current time.
+func NewProgress() *Progress {
+	return &Progress{
+		ActivePhase: PhaseConnect,
+		Steps:       make([]*Step, 0, 16),
+		StartedAt:   time.Now(),
+	}
+}
+
+// AddStep appends a new step in the given phase with the given label.
+// The step starts as Pending with BestEffort confidence.
+func (p *Progress) AddStep(phase PhaseID, label, detail string) *Step {
+	s := &Step{
+		ID:         fmt.Sprintf("%s:%d", phase, len(p.Steps)),
+		Phase:      phase,
+		Label:      label,
+		Status:     StepPending,
+		Confidence: ConfidenceBestEffort,
+		Detail:     detail,
+	}
+	p.Steps = append(p.Steps, s)
+	return s
+}
+
+// StartStep marks a step as running, records the start time.
+func (p *Progress) StartStep(step *Step) {
+	now := time.Now()
+	step.Status = StepRunning
+	step.Confidence = ConfidenceBestEffort
+	step.StartedAt = &now
+	p.ActivePhase = step.Phase
+}
+
+// CompleteStep marks a step as completed with guaranteed confidence.
+func (p *Progress) CompleteStep(step *Step) {
+	now := time.Now()
+	step.Status = StepCompleted
+	step.Confidence = ConfidenceGuaranteed
+	step.FinishedAt = &now
+	if step.StartedAt != nil {
+		step.DurationMs = now.Sub(*step.StartedAt).Milliseconds()
+	}
+}
+
+// FailStep marks a step as failed with guaranteed confidence.
+func (p *Progress) FailStep(step *Step, errMsg string) {
+	now := time.Now()
+	step.Status = StepFailed
+	step.Confidence = ConfidenceGuaranteed
+	step.FinishedAt = &now
+	step.Error = errMsg
+	if step.StartedAt != nil {
+		step.DurationMs = now.Sub(*step.StartedAt).Milliseconds()
+	}
+	p.Error = errMsg
+}
+
+// SkipStep marks a step as intentionally skipped.  The reason is stored in
+// Error (not Detail) so that a pre-existing Detail (e.g. a file path) is
+// preserved for the renderer.
+func (p *Progress) SkipStep(step *Step, reason string) {
+	now := time.Now()
+	step.Status = StepSkipped
+	step.Confidence = ConfidenceGuaranteed
+	step.FinishedAt = &now
+	step.Error = reason
+}
+
+// MarkStalled transitions any running step in the given phase to stalled.
+// Called when a heartbeat timeout fires for that phase.
+func (p *Progress) MarkStalled(phase PhaseID) {
+	for _, s := range p.Steps {
+		if s.Phase == phase && s.Status == StepRunning {
+			s.Status = StepStalled
+			// Confidence stays BestEffort — we don't actually know if it failed
+		}
+	}
+}
+
+// RecordHeartbeat updates the last-seen heartbeat timestamp.
+func (p *Progress) RecordHeartbeat() {
+	now := time.Now()
+	p.LastHeartbeat = &now
+}
+
+// ActiveSteps returns steps whose status is Running or Stalled.
+func (p *Progress) ActiveSteps() []*Step {
+	var out []*Step
+	for _, s := range p.Steps {
+		if s.Status == StepRunning || s.Status == StepStalled {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// CompletedSteps returns steps with guaranteed terminal status.
+func (p *Progress) CompletedSteps() []*Step {
+	var out []*Step
+	for _, s := range p.Steps {
+		if s.Status == StepCompleted {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// FailedSteps returns steps that failed.
+func (p *Progress) FailedSteps() []*Step {
+	var out []*Step
+	for _, s := range p.Steps {
+		if s.Status == StepFailed {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// PhaseSteps returns all steps belonging to the given phase, preserving order.
+func (p *Progress) PhaseSteps(phase PhaseID) []*Step {
+	var out []*Step
+	for _, s := range p.Steps {
+		if s.Phase == phase {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// Summary returns a one-line human-readable summary of progress.
+// Running and stalled steps are reported separately so the user is not
+// misled into thinking a stalled operation is actively making progress.
+func (p *Progress) Summary() string {
+	total := len(p.Steps)
+	done := len(p.CompletedSteps())
+	failed := len(p.FailedSteps())
+
+	var running, stalled int
+	for _, s := range p.Steps {
+		switch s.Status {
+		case StepRunning:
+			running++
+		case StepStalled:
+			stalled++
+		}
+	}
+
+	parts := []string{}
+	if done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", done))
+	}
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", running))
+	}
+	if stalled > 0 {
+		parts = append(parts, fmt.Sprintf("%d stalled", stalled))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", failed))
+	}
+	if total > done+running+stalled+failed {
+		pending := total - done - running - stalled - failed
+		parts = append(parts, fmt.Sprintf("%d pending", pending))
+	}
+
+	elapsed := time.Since(p.StartedAt)
+	if elapsed < time.Second {
+		elapsed = 0
+	}
+	elapsedStr := formatProgressDuration(elapsed)
+
+	summary := strings.Join(parts, " | ")
+	if summary == "" {
+		summary = "starting"
+	}
+	return fmt.Sprintf("[%s] %s (%s elapsed)", p.ActivePhase.PhaseLabel(), summary, elapsedStr)
+}
+
+// formatProgressDuration produces a compact duration string.
+func formatProgressDuration(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) - m*60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) - h*60
+	return fmt.Sprintf("%dh%dm", h, m)
+}

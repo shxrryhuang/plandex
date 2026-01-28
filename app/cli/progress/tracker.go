@@ -29,7 +29,7 @@ type Tracker struct {
 	lastActivity   time.Time
 
 	// Callbacks
-	onStall     func(step *shared.Step)
+	onStall     func(step *shared.ProgressStep)
 	onPhaseEnd  func(phase shared.ProgressPhase)
 }
 
@@ -40,7 +40,7 @@ type TrackerConfig struct {
 	Output         io.Writer
 	Verbose        bool
 	StallThreshold time.Duration
-	OnStall        func(step *shared.Step)
+	OnStall        func(step *shared.ProgressStep)
 	OnPhaseEnd     func(phase shared.ProgressPhase)
 }
 
@@ -56,7 +56,7 @@ func NewTracker(cfg TrackerConfig) *Tracker {
 		Phase:     shared.PhaseInitializing,
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		Steps:     make([]shared.Step, 0),
+		Steps:     make([]shared.ProgressStep, 0),
 		CanCancel: true,
 	}
 
@@ -123,7 +123,7 @@ func (t *Tracker) StartStep(kind shared.StepKind, label string, detail string) s
 	t.stepSeq++
 	id := fmt.Sprintf("step-%d", t.stepSeq)
 
-	step := shared.Step{
+	step := shared.ProgressStep{
 		ID:        id,
 		Kind:      kind,
 		State:     shared.StepStateRunning,

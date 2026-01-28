@@ -21,10 +21,10 @@ type PipelineConfig struct {
 
 	// Callbacks
 	OnPhaseChange func(phase shared.ProgressPhase, label string)
-	OnStepStart   func(step *shared.Step)
-	OnStepUpdate  func(step *shared.Step)
-	OnStepEnd     func(step *shared.Step)
-	OnStall       func(step *shared.Step)
+	OnStepStart   func(step *shared.ProgressStep)
+	OnStepUpdate  func(step *shared.ProgressStep)
+	OnStepEnd     func(step *shared.ProgressStep)
+	OnStall       func(step *shared.ProgressStep)
 	OnComplete    func(report *shared.ProgressReport)
 	OnError       func(err error)
 
@@ -50,7 +50,7 @@ type Pipeline struct {
 
 	// Step tracking
 	stepSeq  int
-	stepByID map[string]*shared.Step
+	stepByID map[string]*shared.ProgressStep
 
 	// Phase tracking (local, not in shared struct)
 	phaseStartedAt time.Time
@@ -71,13 +71,13 @@ func New(config PipelineConfig) *Pipeline {
 
 	return &Pipeline{
 		config:   config,
-		stepByID: make(map[string]*shared.Step),
+		stepByID: make(map[string]*shared.ProgressStep),
 		ctx:      ctx,
 		cancel:   cancel,
 		report: &shared.ProgressReport{
 			Phase:     shared.PhaseInitializing,
 			StartedAt: time.Now(),
-			Steps:     []shared.Step{},
+			Steps:     []shared.ProgressStep{},
 		},
 	}
 }
@@ -144,7 +144,7 @@ func (p *Pipeline) StartStep(kind shared.StepKind, label, detail string) string 
 	p.stepSeq++
 	id := fmt.Sprintf("step-%d-%s", p.stepSeq, uuid.New().String()[:8])
 
-	step := shared.Step{
+	step := shared.ProgressStep{
 		ID:        id,
 		Kind:      kind,
 		State:     shared.StepStateRunning,
@@ -275,19 +275,19 @@ func (p *Pipeline) GetReport() shared.ProgressReport {
 
 	// Return a copy
 	report := *p.report
-	report.Steps = make([]shared.Step, len(p.report.Steps))
+	report.Steps = make([]shared.ProgressStep, len(p.report.Steps))
 	copy(report.Steps, p.report.Steps)
 	return report
 }
 
 // GetStep returns a copy of a specific step
-func (p *Pipeline) GetStep(id string) (shared.Step, bool) {
+func (p *Pipeline) GetStep(id string) (shared.ProgressStep, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	step, ok := p.stepByID[id]
 	if !ok {
-		return shared.Step{}, false
+		return shared.ProgressStep{}, false
 	}
 	return *step, true
 }

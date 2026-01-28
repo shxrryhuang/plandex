@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"plandex-cli/term"
-
 	shared "plandex-shared"
 
 	"github.com/charmbracelet/lipgloss"
@@ -84,11 +83,66 @@ func (m streamUIModel) renderHelp() string {
 }
 
 func (m streamUIModel) renderProcessing() string {
-	if m.starting || m.processing {
-		return "\n " + m.spinner.View()
-	} else {
+	if !m.starting && !m.processing {
 		return ""
 	}
+
+	// If the progress adapter has steps, render the phase bar instead of the
+	// bare spinner.  The phase bar shows where we are in the pipeline and
+	// surfaces stall warnings when no heartbeat has been received.
+	if m.progressAdapter != nil && m.progressRenderer != nil {
+		p := m.progressAdapter.Progress()
+		if len(p.Steps) > 0 {
+			lines := m.progressRenderer.Lines(p)
+			return "\n" + strings.Join(lines, "\n")
+		}
+	}
+
+	// Fallback: original spinner while the adapter has no data yet.
+	return "\n " + m.spinner.View()
+}
+
+// progressHeight returns the line count the progress bar will occupy without
+// doing a full render.  Used by getViewportDimensions so it does not pay the
+// cost of building all the coloured strings on every chunk/tick.
+func (m streamUIModel) progressHeight() int {
+	if !m.starting && !m.processing {
+		return 0
+	}
+	if m.progressAdapter != nil {
+		p := m.progressAdapter.Progress()
+		if len(p.Steps) > 0 {
+			// 1 phase bar + active + recent completions (≤3) + failures + optional stall warning + summary + leading newline
+			active := 0
+			completed := 0
+			failed := 0
+			hasStall := false
+			for _, s := range p.Steps {
+				switch s.Status {
+				case shared.StepRunning, shared.StepStalled:
+					active++
+					if s.Status == shared.StepStalled {
+						hasStall = true
+					}
+				case shared.StepCompleted:
+					completed++
+				case shared.StepFailed:
+					failed++
+				}
+			}
+			recentCompleted := completed
+			if recentCompleted > 3 {
+				recentCompleted = 3
+			}
+			lines := 1 + active + recentCompleted + failed + 1 // phase bar + steps + summary
+			if hasStall {
+				lines++
+			}
+			return lines + 1 // +1 for the leading "\n"
+		}
+	}
+	// Fallback spinner: 2 lines (newline + spinner)
+	return 2
 }
 
 func (m streamUIModel) renderBuild() string {
@@ -405,7 +459,7 @@ func (m streamUIModel) renderProgressView() string {
 }
 
 // renderProgressStep renders a single step in the progress view
-func (m streamUIModel) renderProgressStep(step *shared.Step, isCurrent bool) string {
+func (m streamUIModel) renderProgressStep(step *shared.ProgressStep, isCurrent bool) string {
 	var b strings.Builder
 
 	// State icon with spinner for running steps
@@ -466,12 +520,12 @@ func (m streamUIModel) renderProgressStep(step *shared.Step, isCurrent bool) str
 }
 
 // getRecentCompletedSteps returns the most recent completed steps
-func (m streamUIModel) getRecentCompletedSteps(n int) []shared.Step {
+func (m streamUIModel) getRecentCompletedSteps(n int) []shared.ProgressStep {
 	if m.progressReport == nil {
 		return nil
 	}
 
-	var completed []shared.Step
+	var completed []shared.ProgressStep
 	for i := len(m.progressReport.Steps) - 1; i >= 0 && len(completed) < n; i-- {
 		step := m.progressReport.Steps[i]
 		if step.State.IsTerminal() && step.ID != m.progressReport.CurrentStepID {
