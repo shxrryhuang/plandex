@@ -73,11 +73,17 @@ type ValidationResult struct {
 
 // HasErrors returns true if there are any errors
 func (r *ValidationResult) HasErrors() bool {
+	if r == nil {
+		return false
+	}
 	return len(r.Errors) > 0
 }
 
 // HasWarnings returns true if there are any warnings
 func (r *ValidationResult) HasWarnings() bool {
+	if r == nil {
+		return false
+	}
 	return len(r.Warnings) > 0
 }
 
@@ -88,6 +94,9 @@ func (r *ValidationResult) IsValid() bool {
 
 // AddError adds a validation error
 func (r *ValidationResult) AddError(err *ValidationError) {
+	if r == nil || err == nil {
+		return
+	}
 	if err.Severity == SeverityWarning {
 		r.Warnings = append(r.Warnings, err)
 	} else {
@@ -97,12 +106,19 @@ func (r *ValidationResult) AddError(err *ValidationError) {
 
 // Merge combines results from multiple validations
 func (r *ValidationResult) Merge(other *ValidationResult) {
+	if r == nil || other == nil {
+		return
+	}
 	r.Errors = append(r.Errors, other.Errors...)
 	r.Warnings = append(r.Warnings, other.Warnings...)
 }
 
 // FormatError formats a single validation error for display
 func FormatError(err *ValidationError, verbose bool) string {
+	if err == nil {
+		return ""
+	}
+
 	var b strings.Builder
 
 	// Header with emoji and severity
@@ -136,6 +152,9 @@ func FormatError(err *ValidationError, verbose bool) string {
 
 // FormatResult formats all validation errors for display
 func FormatResult(result *ValidationResult, verbose bool) string {
+	if result == nil {
+		return "✅ All validation checks passed!\n"
+	}
 	if result.IsValid() && !result.HasWarnings() {
 		return "✅ All validation checks passed!\n"
 	}
