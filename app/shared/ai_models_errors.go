@@ -22,6 +22,80 @@ type ModelError struct {
 	Kind              ModelErrKind
 	Retriable         bool
 	RetryAfterSeconds int
+
+	// ProviderFailure contains the full classification details from the unified system
+	// This allows access to richer error information while maintaining backwards compatibility
+	ProviderFailure *ProviderFailure `json:"providerFailure,omitempty"`
+}
+
+// =============================================================================
+// PROVIDER FAILURE INTEGRATION
+// =============================================================================
+
+// FromProviderFailure converts a ProviderFailure to ModelError
+// This provides backwards compatibility with existing code that uses ModelError
+// while allowing the system to leverage the richer ProviderFailure classification
+func FromProviderFailure(pf *ProviderFailure) *ModelError {
+	if pf == nil {
+		return nil
+	}
+
+	var kind ModelErrKind
+	switch pf.Type {
+	case FailureTypeOverloaded:
+		kind = ErrOverloaded
+	case FailureTypeContextTooLong:
+		kind = ErrContextTooLong
+	case FailureTypeRateLimit:
+		kind = ErrRateLimited
+	case FailureTypeQuotaExhausted:
+		kind = ErrSubscriptionQuotaExhausted
+	case FailureTypeCacheError:
+		kind = ErrCacheSupport
+	default:
+		kind = ErrOther
+	}
+
+	return &ModelError{
+		Kind:              kind,
+		Retriable:         pf.Retryable,
+		RetryAfterSeconds: pf.RetryAfterSeconds,
+		ProviderFailure:   pf,
+	}
+}
+
+// GetProviderFailure returns the underlying ProviderFailure if available
+// Returns nil if the ModelError was created without a ProviderFailure
+func (m *ModelError) GetProviderFailure() *ProviderFailure {
+	if m == nil {
+		return nil
+	}
+	return m.ProviderFailure
+}
+
+// GetRetryPolicy returns the appropriate retry policy for this error
+// Returns nil if the error is not retryable
+func (m *ModelError) GetRetryPolicy() *RetryPolicy {
+	if m == nil || !m.Retriable {
+		return nil
+	}
+
+	// If we have a ProviderFailure, use its type for policy lookup
+	if m.ProviderFailure != nil {
+		return GetPolicyForFailure(m.ProviderFailure.Type)
+	}
+
+	// Otherwise, map from ModelErrKind
+	switch m.Kind {
+	case ErrOverloaded:
+		return GetPolicyForFailure(FailureTypeOverloaded)
+	case ErrRateLimited:
+		return GetPolicyForFailure(FailureTypeRateLimit)
+	case ErrCacheSupport:
+		return GetPolicyForFailure(FailureTypeCacheError)
+	default:
+		return GetDefaultPolicy()
+	}
 }
 
 func (m ModelError) ShouldIncrementRetry() bool {
