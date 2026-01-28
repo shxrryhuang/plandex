@@ -255,7 +255,53 @@ Shows examples of:
 
 ---
 
+## Standalone Test Pipeline
+
+A standalone pipeline is available for testing all progress features without affecting original code:
+
+```bash
+cd app/cli
+
+# Run all 8 scenarios
+go run ./progress/pipeline/cmd/
+
+# Run specific scenario
+go run ./progress/pipeline/cmd/ -scenario=failure
+
+# Use log format for CI/non-TTY
+go run ./progress/pipeline/cmd/ -log
+
+# Run tests with race detection
+go test -race ./progress/pipeline/...
+```
+
+**Available Scenarios:** `normal`, `slow_llm`, `stalled`, `failure`, `user_input`, `large_task`, `quick_task`, `mixed`
+
+---
+
+## Bug Fixes Applied
+
+Critical bugs were identified and fixed during implementation:
+
+| Bug | Location | Fix |
+|-----|----------|-----|
+| Deadlock in StreamMessageReply | `update.go` | Move `progressStartStep` outside `updateState` closure |
+| Deadlock in StreamMessageLoadContext | `update.go` | Move `progressStartStep` outside `updateState` closure |
+| Race condition reading map | `update.go` | Read `progressBuildIDs` inside lock |
+| Token count replacement | `update.go` | Accumulate tokens with `+=` instead of `=` |
+| Nil pointer in Fail() | `pipeline.go` | Add nil check before `err.Error()` |
+| Goroutine leak in spinner | `runner.go` | Add context cancellation |
+| Zero time handling | `runner.go` | Validate `time.Time` before operations |
+
+See `progress-reporting-bug-fixes.md` and `progress-pipeline-error-fixes.md` for details.
+
+---
+
 ## Related Documentation
 
-- `docs/progress-reporting.md` - Full design documentation
-- `docs/progress-reporting-bug-fixes.md` - Bug fixes applied during implementation
+| Document | Description |
+|----------|-------------|
+| [progress-reporting.md](progress-reporting.md) | Full design documentation |
+| [progress-reporting-bug-fixes.md](progress-reporting-bug-fixes.md) | Bug fixes in stream_tui integration |
+| [progress-pipeline.md](progress-pipeline.md) | Standalone pipeline documentation |
+| [progress-pipeline-error-fixes.md](progress-pipeline-error-fixes.md) | Error handling fixes in pipeline |

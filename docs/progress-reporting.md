@@ -380,10 +380,24 @@ Environment variables:
 
 ## Implementation Files
 
-- `app/shared/progress.go` - Core types and state model
-- `app/cli/progress/tracker.go` - State management and tracking (standalone usage)
-- `app/cli/progress/renderer.go` - TTY and non-TTY rendering (standalone usage)
-- `app/cli/progress/stream_adapter.go` - Bridge for streaming protocol (standalone usage)
+### Core Types
+- `app/shared/progress.go` - Core types and state model shared between CLI and server
+
+### Standalone Progress Package
+- `app/cli/progress/tracker.go` - State management and tracking
+- `app/cli/progress/renderer.go` - TTY and non-TTY rendering
+- `app/cli/progress/stream_adapter.go` - Bridge for streaming protocol
+- `app/cli/progress/examples_test.go` - Test cases for all scenarios
+- `app/cli/progress/demo/main.go` - Demo program showing output examples
+
+### Standalone Test Pipeline
+- `app/cli/progress/pipeline/pipeline.go` - Independent pipeline for testing
+- `app/cli/progress/pipeline/mock_stream.go` - 8 simulation scenarios
+- `app/cli/progress/pipeline/runner.go` - Visual output handler
+- `app/cli/progress/pipeline/pipeline_test.go` - Tests with race detection
+- `app/cli/progress/pipeline/cmd/main.go` - CLI entry point
+
+### Stream TUI Integration
 - `app/cli/stream_tui/model.go` - Progress fields integrated into TUI model
 - `app/cli/stream_tui/view.go` - Progress view rendering with `renderProgressView()`
 - `app/cli/stream_tui/update.go` - Progress tracking on stream message handlers
@@ -421,3 +435,61 @@ Each operation is tracked as a step:
 - **Missing file prompts** - Tracked as user input steps
 
 The system integrates with the existing streaming architecture while providing richer visibility into execution state.
+
+---
+
+## Standalone Test Pipeline
+
+A standalone pipeline is available for testing progress features without affecting the original code:
+
+```bash
+cd app/cli
+
+# Run all scenarios
+go run ./progress/pipeline/cmd/
+
+# Run specific scenario
+go run ./progress/pipeline/cmd/ -scenario=normal
+go run ./progress/pipeline/cmd/ -scenario=failure
+go run ./progress/pipeline/cmd/ -scenario=stalled
+
+# Use log format for CI
+go run ./progress/pipeline/cmd/ -log
+
+# Run tests with race detection
+go test -race ./progress/pipeline/...
+```
+
+### Available Scenarios
+
+| Scenario | Description |
+|----------|-------------|
+| `normal` | Successful execution with multiple files |
+| `slow_llm` | Slow LLM response (extended streaming) |
+| `stalled` | Operation that triggers stall detection |
+| `failure` | Build failure with error message |
+| `user_input` | Waiting for user input |
+| `large_task` | Many files (20+) to build |
+| `quick_task` | Fast, single-file task |
+| `mixed` | Mix of success, failure, and skip |
+
+---
+
+## Related Documentation
+
+| Document | Description |
+|----------|-------------|
+| [progress-reporting-feature-updates.md](progress-reporting-feature-updates.md) | Summary of all new features |
+| [progress-reporting-bug-fixes.md](progress-reporting-bug-fixes.md) | Bugs found and fixed in stream_tui integration |
+| [progress-pipeline.md](progress-pipeline.md) | Standalone pipeline documentation |
+| [progress-pipeline-error-fixes.md](progress-pipeline-error-fixes.md) | Error handling fixes in pipeline |
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-01-28 | Initial implementation with stream_tui integration |
+| 1.1 | 2026-01-28 | Added standalone pipeline for testing |
+| 1.2 | 2026-01-28 | Fixed critical bugs (deadlocks, race conditions, nil pointers) |
