@@ -82,8 +82,9 @@ func prepareOperations(
 			continue
 		}
 
-		// Unescape escaped backticks
+		// Unescape escaped backticks (handle triple first to avoid double-processing)
 		content = strings.ReplaceAll(content, "\\`\\`\\`", "```")
+		content = strings.ReplaceAll(content, "\\`", "`")
 
 		// Check if file exists to determine operation type
 		fullPath := tx.BaseDir + "/" + path
