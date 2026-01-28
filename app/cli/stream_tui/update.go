@@ -53,11 +53,26 @@ func (m streamUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case contextLoadDoneMsg:
 		if msg.err != nil {
 			log.Println("failed to auto load context files:", msg.err)
+			// Fail context step
+			if m.progressContextID != "" {
+				m.progressFailStep(m.progressContextID, msg.err.Error())
+				m.updateState(func() {
+					m.progressContextID = ""
+				})
+			}
 			m.updateState(func() {
 				m.err = msg.err
 				m.processing = false
 			})
 			return m, tea.Quit
+		}
+
+		// Complete context loading step
+		if m.progressContextID != "" {
+			m.progressCompleteStep(m.progressContextID)
+			m.updateState(func() {
+				m.progressContextID = ""
+			})
 		}
 
 		// We have the loaded content in msg.text
@@ -111,6 +126,12 @@ func (m streamUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				return m, tea.Quit
 			}
+
+		case bubbleKey.Matches(msg, m.keymap.toggleProgress):
+			m.updateState(func() {
+				m.showProgressView = !m.showProgressView
+			})
+			return m, nil
 
 		case bubbleKey.Matches(msg, m.keymap.scrollDown) && !m.promptingMissingFile:
 			m.scrollDown()
@@ -380,11 +401,13 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.updateState(func() {
 				m.buildOnly = true
 			})
+			m.progressSetPhase(shared.PhaseBuilding, "Building files")
 		}
 		if len(msg.InitReplies) > 0 {
 			m.updateState(func() {
 				m.reply = strings.Join(msg.InitReplies, "\n\n👇\n\n")
 			})
+			m.progressSetPhase(shared.PhasePlanning, "Resuming planning")
 		}
 		m.updateReplyDisplay()
 		return m.checkMissingFile(msg)
@@ -403,6 +426,13 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 		if state.starting {
 			m.updateState(func() {
 				m.starting = false
+			})
+			// Start LLM tracking step
+			m.progressSetPhase(shared.PhasePlanning, "Planning task")
+			// Note: progressStartStep must be called outside updateState to avoid deadlock
+			llmID := m.progressStartStep(shared.StepKindLLMCall, "Calling LLM", "streaming")
+			m.updateState(func() {
+				m.progressLLMID = llmID
 			})
 		}
 
@@ -425,6 +455,12 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.reply += msg.ReplyChunk
 		})
 
+		// Update LLM step with token estimate
+		if m.progressLLMID != "" {
+			tokens := len(msg.ReplyChunk) / 4 // rough estimate
+			m.progressUpdateStep(m.progressLLMID, "", tokens, "")
+		}
+
 		if !deferUIUpdate {
 			m.updateReplyDisplay()
 		}
@@ -436,6 +472,18 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.updateState(func() {
 				m.starting = false
 			})
+		}
+
+		// Transition to building phase
+		if !state.building {
+			m.progressSetPhase(shared.PhaseBuilding, "Building files")
+			// Complete LLM step if active
+			if m.progressLLMID != "" {
+				m.progressCompleteStep(m.progressLLMID)
+				m.updateState(func() {
+					m.progressLLMID = ""
+				})
+			}
 		}
 
 		m.updateState(func() {
@@ -452,11 +500,40 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			}
 		})
 
+		// Track build step in progress report
+		path := msg.BuildInfo.Path
+		var stepID string
+		var exists bool
+		// Read map inside lock to avoid race condition
+		m.updateState(func() {
+			stepID, exists = m.progressBuildIDs[path]
+		})
+		if !exists {
+			label := "Building file"
+			detail := path
+			if path == "_apply.sh" {
+				label = "Building commands"
+				detail = "apply script"
+			}
+			// Note: progressStartStep must be called outside updateState to avoid deadlock
+			stepID = m.progressStartStep(shared.StepKindFileBuild, label, detail)
+			m.updateState(func() {
+				m.progressBuildIDs[path] = stepID
+			})
+		}
+
 		if msg.BuildInfo.Finished {
 			m.updateState(func() {
 				m.tokensByPath[msg.BuildInfo.Path] = 0
 				m.finishedByPath[msg.BuildInfo.Path] = true
 			})
+			// Mark progress step as complete or skipped
+			if msg.BuildInfo.Removed {
+				m.progressSkipStep(stepID)
+			} else {
+				m.progressUpdateStep(stepID, "", msg.BuildInfo.NumTokens, "")
+				m.progressCompleteStep(stepID)
+			}
 		} else {
 			if wasFinished && !nowFinished {
 				// delay for a second before marking not finished again (so check flashes green prior to restarting build)
@@ -471,6 +548,8 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			m.updateState(func() {
 				m.tokensByPath[msg.BuildInfo.Path] += msg.BuildInfo.NumTokens
 			})
+			// Update progress with tokens
+			m.progressUpdateStep(stepID, "", msg.BuildInfo.NumTokens, "")
 		}
 
 		// Auto-collapse if build info takes up too much space
@@ -493,12 +572,27 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 		m.updateState(func() {
 			m.processing = true
 		})
+		// Transition to describing phase
+		m.progressSetPhase(shared.PhaseDescribing, "Describing changes")
+		// Complete LLM step if active
+		if m.progressLLMID != "" {
+			m.progressCompleteStep(m.progressLLMID)
+			m.updateState(func() {
+				m.progressLLMID = ""
+			})
+		}
 		return m, m.Tick()
 
 		// Instead of blocking here, we'll spawn a command
 	case shared.StreamMessageLoadContext:
 		m.updateState(func() {
 			m.processing = true
+		})
+		// Track context loading step
+		// Note: progressStartStep must be called outside updateState to avoid deadlock
+		contextID := m.progressStartStep(shared.StepKindContext, "Loading context", fmt.Sprintf("%d files", len(msg.LoadContextFiles)))
+		m.updateState(func() {
+			m.progressContextID = contextID
 		})
 		return m, tea.Batch(
 			loadContextCmd(msg.LoadContextFiles),
@@ -515,18 +609,70 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 			state.autoLoadContextCancelFn()
 		}
 
+		// Update progress to failed state
+		m.progressSetPhase(shared.PhaseFailed, "Failed")
+		errMsg := "unknown error"
+		if msg.Error != nil {
+			errMsg = msg.Error.Msg
+		}
+		// Fail active steps
+		if m.progressLLMID != "" {
+			m.progressFailStep(m.progressLLMID, errMsg)
+		}
+		if m.progressContextID != "" {
+			m.progressFailStep(m.progressContextID, errMsg)
+		}
+		for _, stepID := range m.progressBuildIDs {
+			if m.progressReport != nil {
+				for _, step := range m.progressReport.Steps {
+					if step.ID == stepID && !step.State.IsTerminal() {
+						m.progressFailStep(stepID, "interrupted")
+					}
+				}
+			}
+		}
+
 		m.updateState(func() {
 			m.apiErr = msg.Error
 		})
 		return m, tea.Quit
 
 	case shared.StreamMessageFinished:
+		// Update progress to completed state
+		m.progressSetPhase(shared.PhaseCompleted, "Completed")
+		// Complete any remaining steps
+		if m.progressLLMID != "" {
+			m.progressCompleteStep(m.progressLLMID)
+		}
+		if m.progressContextID != "" {
+			m.progressCompleteStep(m.progressContextID)
+		}
+
 		m.updateState(func() {
 			m.finished = true
 		})
 		return m, tea.Quit
 
 	case shared.StreamMessageAborted:
+		// Update progress to stopped state
+		m.progressSetPhase(shared.PhaseStopped, "Stopped")
+		// Skip active steps
+		if m.progressLLMID != "" {
+			m.progressSkipStep(m.progressLLMID)
+		}
+		if m.progressContextID != "" {
+			m.progressSkipStep(m.progressContextID)
+		}
+		for _, stepID := range m.progressBuildIDs {
+			if m.progressReport != nil {
+				for _, step := range m.progressReport.Steps {
+					if step.ID == stepID && !step.State.IsTerminal() {
+						m.progressSkipStep(stepID)
+					}
+				}
+			}
+		}
+
 		m.updateState(func() {
 			m.stopped = true
 		})
@@ -539,6 +685,14 @@ func (m *streamUIModel) streamUpdate(msg *shared.StreamMessage, deferUIUpdate bo
 		m.updateState(func() {
 			m.processing = false
 		})
+
+		// Complete LLM step
+		if m.progressLLMID != "" {
+			m.progressCompleteStep(m.progressLLMID)
+			m.updateState(func() {
+				m.progressLLMID = ""
+			})
+		}
 
 		if state.building {
 			return m, m.Tick()
@@ -760,4 +914,90 @@ func loadContextCmd(loadContextFiles []string) tea.Cmd {
 			err:  err,
 		}
 	}
+}
+
+// Progress tracking helper functions
+
+// progressSetPhase updates the progress phase
+func (m *streamUIModel) progressSetPhase(phase shared.ProgressPhase, label string) {
+	m.updateState(func() {
+		if m.progressReport != nil {
+			m.progressReport.Phase = phase
+			m.progressReport.PhaseLabel = label
+			m.progressReport.UpdatedAt = time.Now()
+		}
+	})
+}
+
+// progressStartStep starts tracking a new step
+func (m *streamUIModel) progressStartStep(kind shared.StepKind, label, detail string) string {
+	var id string
+	m.updateState(func() {
+		if m.progressReport == nil {
+			return
+		}
+		m.progressStepSeq++
+		id = fmt.Sprintf("step-%d", m.progressStepSeq)
+
+		step := shared.Step{
+			ID:        id,
+			Kind:      kind,
+			State:     shared.StepStateRunning,
+			Label:     label,
+			Detail:    detail,
+			StartedAt: time.Now(),
+			Progress:  -1,
+		}
+
+		m.progressReport.Steps = append(m.progressReport.Steps, step)
+		m.progressReport.CurrentStepID = id
+		m.progressReport.TotalSteps = len(m.progressReport.Steps)
+		m.progressReport.UpdatedAt = time.Now()
+	})
+	return id
+}
+
+// progressUpdateStep updates a step's state
+// Note: tokens are accumulated, not replaced
+func (m *streamUIModel) progressUpdateStep(id string, state shared.StepState, tokens int, errMsg string) {
+	m.updateState(func() {
+		if m.progressReport == nil {
+			return
+		}
+		for i := range m.progressReport.Steps {
+			if m.progressReport.Steps[i].ID == id {
+				if state != "" {
+					m.progressReport.Steps[i].State = state
+					if state.IsTerminal() {
+						m.progressReport.Steps[i].CompletedAt = time.Now()
+					}
+				}
+				if tokens > 0 {
+					// Accumulate tokens, don't replace
+					m.progressReport.Steps[i].TokensProcessed += tokens
+				}
+				if errMsg != "" {
+					m.progressReport.Steps[i].Error = errMsg
+				}
+				break
+			}
+		}
+		m.progressReport.UpdateCounts()
+		m.progressReport.SetSuggestedAction()
+	})
+}
+
+// progressCompleteStep marks a step as completed
+func (m *streamUIModel) progressCompleteStep(id string) {
+	m.progressUpdateStep(id, shared.StepStateCompleted, 0, "")
+}
+
+// progressFailStep marks a step as failed
+func (m *streamUIModel) progressFailStep(id string, errMsg string) {
+	m.progressUpdateStep(id, shared.StepStateFailed, 0, errMsg)
+}
+
+// progressSkipStep marks a step as skipped
+func (m *streamUIModel) progressSkipStep(id string) {
+	m.progressUpdateStep(id, shared.StepStateSkipped, 0, "")
 }

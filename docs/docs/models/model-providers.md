@@ -141,6 +141,46 @@ You can optionally use Perplexity models with your own Perplexity account.
 export PERPLEXITY_API_KEY=... # set your Perplexity API key for Perplexity models
 ```
 
+## Pre-Execution Validation
+
+Plandex validates provider credentials **before** making any API call. When you run `tell`, `build`, or `continue`, the CLI fetches the current plan's model settings and checks that every required credential is in place. This prevents opaque failures deep into execution.
+
+**What is checked:**
+
+| Check | Severity | When |
+|-------|----------|------|
+| Required API key env var is set and non-empty | Fatal | Plan execution |
+| Extra required auth vars (e.g. `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`) are set | Fatal | Plan execution |
+| File-path credentials (e.g. `GOOGLE_APPLICATION_CREDENTIALS`) point to an existing file | Fatal | Plan execution |
+| AWS profile references a reachable `~/.aws/credentials` or `~/.aws/config` | Fatal | Plan execution |
+| Claude Max credentials file exists when subscription is in use | Warning | Plan execution |
+| Both `ANTHROPIC_API_KEY` and Claude Max are configured simultaneously | Warning | Plan execution |
+
+**Example output for a missing key:**
+```
+── Configuration errors must be fixed before running ──
+
+  PROVIDER
+    ✗  Missing required environment variable OPENAI_API_KEY (needed for openai)
+       → export OPENAI_API_KEY='your-api-key'
+    ✗  Missing required environment variable VERTEXAI_PROJECT (needed for google-vertex)
+       → export VERTEXAI_PROJECT='your-project-id'
+```
+
+Warnings print but do not block execution. Fatal errors exit immediately with a clear fix instruction.
+
+### Known Gaps (Identified by Error Scan)
+
+A scan of the codebase identified the following provider-related error conditions that are not yet caught by pre-execution validation. They surface as runtime errors instead:
+
+| Condition | Where it fails | Current behaviour |
+|-----------|----------------|-------------------|
+| `GOOGLE_APPLICATION_CREDENTIALS` points to a file with invalid JSON | Provider initialisation | Unmarshal error at API call time |
+| `PLANDEX_AWS_PROFILE` names a profile not defined in `~/.aws/credentials` | AWS config loading | `LoadDefaultConfig` returns error |
+| `OPENAI_ORG_ID` is set to a non-existent org | First OpenAI API call | 401/403 from OpenAI |
+
+These are candidates for future validation rounds — the framework supports them, but they require either file-content parsing or live API probing that is deferred for now.
+
 ## Custom Providers
 
 If you're self-hosting Plandex, you can also use with models from any provider that provides an OpenAI-compatible API.

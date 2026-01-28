@@ -105,8 +105,10 @@ func getOnApplyExecFail(applyFlags types.ApplyFlags, tellFlags types.TellFlags, 
 				}
 
 			case RollbackChangesAndExit:
-				if toRollback != nil {
-					lib.Rollback(toRollback, true)
+				if toRollback != nil && toRollback.HasChanges() {
+					if rbErr := lib.Rollback(toRollback, true); rbErr != nil {
+						term.OutputErrorAndExit("rollback failed: %s", rbErr)
+					}
 				}
 				os.Exit(1)
 			case ApplyChangesAndExit:
@@ -117,7 +119,9 @@ func getOnApplyExecFail(applyFlags types.ApplyFlags, tellFlags types.TellFlags, 
 
 		if proceed {
 			if toRollback != nil && toRollback.HasChanges() {
-				lib.Rollback(toRollback, true)
+				if rbErr := lib.Rollback(toRollback, true); rbErr != nil {
+					term.OutputErrorAndExit("rollback before retry failed: %s", rbErr)
+				}
 			}
 
 			authVars := lib.MustVerifyAuthVarsSilent(auth.Current.IntegratedModelsMode)

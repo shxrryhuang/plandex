@@ -166,6 +166,12 @@ const (
 	EntryTypeSubtaskComplete EntryType = "subtask_complete"
 	EntryTypeCheckpoint      EntryType = "checkpoint"
 	EntryTypeError           EntryType = "error"
+
+	// Retry tracking entry types
+	EntryTypeRetryAttempt  EntryType = "retry_attempt"   // Records a retry attempt
+	EntryTypeRetryExhaust  EntryType = "retry_exhaust"   // Records when retries are exhausted
+	EntryTypeCircuitEvent  EntryType = "circuit_event"   // Records circuit breaker state changes
+	EntryTypeFallbackEvent EntryType = "fallback_event"  // Records fallback activations
 )
 
 // EntryStatus tracks execution state of an entry
@@ -206,6 +212,12 @@ type EntryData struct {
 
 	// Checkpoints
 	Checkpoint *CheckpointData `json:"checkpoint,omitempty"`
+
+	// Retry tracking
+	RetryAttempt  *RetryAttemptData  `json:"retryAttempt,omitempty"`
+	RetryExhaust  *RetryExhaustData  `json:"retryExhaust,omitempty"`
+	CircuitEvent  *CircuitEventData  `json:"circuitEvent,omitempty"`
+	FallbackEvent *FallbackEventData `json:"fallbackEvent,omitempty"`
 }
 
 // EntryError captures error details
@@ -300,6 +312,104 @@ type CheckpointData struct {
 	Description string            `json:"description,omitempty"`
 	FileHashes  map[string]string `json:"fileHashes"` // Current state of all tracked files
 	Auto        bool              `json:"auto"`       // Auto-created vs user-created
+}
+
+// =============================================================================
+// RETRY TRACKING DATA TYPES
+// =============================================================================
+
+// RetryAttemptData captures a retry attempt for provider failures
+type RetryAttemptData struct {
+	// Attempt tracking
+	AttemptNumber int `json:"attemptNumber"` // Current attempt (1-indexed)
+	TotalAttempts int `json:"totalAttempts"` // Total attempts so far
+
+	// Failure information
+	FailureType  string `json:"failureType"`            // From FailureType
+	ErrorMessage string `json:"errorMessage,omitempty"` // Sanitized error message
+	HTTPCode     int    `json:"httpCode,omitempty"`     // HTTP status code if applicable
+
+	// Provider context
+	Provider string `json:"provider"` // Provider that failed
+	Model    string `json:"model"`    // Model being used
+
+	// Retry policy
+	PolicyUsed string `json:"policyUsed"`        // Name of retry policy applied
+	DelayMs    int64  `json:"delayMs"`           // Delay before this retry in milliseconds
+	WillRetry  bool   `json:"willRetry"`         // Whether another retry will be attempted
+	Retryable  bool   `json:"retryable"`         // Whether the error is retryable
+
+	// Idempotency tracking
+	IdempotencyKey string `json:"idempotencyKey,omitempty"` // Key for preventing duplicates
+	RequestId      string `json:"requestId,omitempty"`      // Unique request identifier
+
+	// Partial response tracking (for stream interruptions)
+	HasPartialResponse bool   `json:"hasPartialResponse,omitempty"`
+	PartialTokens      int    `json:"partialTokens,omitempty"`
+	PartialContentHash string `json:"partialContentHash,omitempty"`
+}
+
+// RetryExhaustData captures when all retry attempts are exhausted
+type RetryExhaustData struct {
+	// Summary
+	TotalAttempts   int   `json:"totalAttempts"`   // Total attempts made
+	TotalDurationMs int64 `json:"totalDurationMs"` // Total time spent in retry loop
+
+	// Failure history
+	FailureTypes []string `json:"failureTypes"` // All failure types encountered
+	FinalError   string   `json:"finalError"`   // The last error that caused exhaustion
+
+	// Provider context
+	Provider string `json:"provider"` // Provider that failed
+	Model    string `json:"model"`    // Model being used
+
+	// Fallback information
+	FallbackUsed bool   `json:"fallbackUsed"`          // Whether fallback was attempted
+	FallbackType string `json:"fallbackType,omitempty"` // Type of fallback used
+
+	// Resolution
+	Resolution string `json:"resolution"` // What happened: "failed", "fallback_success", "user_intervention"
+}
+
+// CircuitEventData captures circuit breaker state transitions
+type CircuitEventData struct {
+	// Provider
+	Provider string `json:"provider"`
+
+	// State transition
+	OldState string `json:"oldState"` // Previous circuit state
+	NewState string `json:"newState"` // New circuit state
+
+	// Trigger information
+	TriggerReason   string `json:"triggerReason,omitempty"`   // Why the transition happened
+	ConsecFailures  int    `json:"consecFailures,omitempty"`  // Consecutive failures count
+	RecentFailures  int    `json:"recentFailures,omitempty"`  // Failures in sliding window
+
+	// Recovery information (for half-open -> closed)
+	RecoverySuccesses int `json:"recoverySuccesses,omitempty"` // Successes in half-open
+}
+
+// FallbackEventData captures fallback activations
+type FallbackEventData struct {
+	// Provider transition
+	FromProvider string `json:"fromProvider"` // Original provider
+	ToProvider   string `json:"toProvider"`   // Fallback provider
+
+	// Model transition
+	FromModel string `json:"fromModel,omitempty"` // Original model
+	ToModel   string `json:"toModel,omitempty"`   // Fallback model
+
+	// Fallback type
+	FallbackType string `json:"fallbackType"` // "error", "context", "provider"
+
+	// Reason for fallback
+	Reason       string `json:"reason"`                 // Human-readable reason
+	FailureType  string `json:"failureType,omitempty"`  // Failure that triggered fallback
+	ErrorMessage string `json:"errorMessage,omitempty"` // Error message
+
+	// Outcome
+	Success bool   `json:"success"`          // Whether fallback succeeded
+	Error   string `json:"error,omitempty"`  // Error if fallback failed
 }
 
 // =============================================================================
@@ -471,6 +581,150 @@ func (j *RunJournal) FailEntry(index int, err *EntryError) error {
 	j.Header.UpdatedAt = now
 
 	return nil
+}
+
+// =============================================================================
+// RETRY TRACKING OPERATIONS
+// =============================================================================
+
+// AppendRetryAttempt records a retry attempt in the journal
+func (j *RunJournal) AppendRetryAttempt(data *RetryAttemptData) *JournalEntry {
+	entry := j.AppendEntry(EntryTypeRetryAttempt, &EntryData{
+		RetryAttempt: data,
+	})
+	// Auto-complete retry attempt entries since they're just logs
+	now := time.Now()
+	entry.Status = EntryStatusCompleted
+	entry.StartedAt = &now
+	entry.CompletedAt = &now
+	j.State.EntriesPending--
+	j.State.EntriesExecuted++
+	return entry
+}
+
+// AppendRetryExhaust records when retries are exhausted
+func (j *RunJournal) AppendRetryExhaust(data *RetryExhaustData) *JournalEntry {
+	entry := j.AppendEntry(EntryTypeRetryExhaust, &EntryData{
+		RetryExhaust: data,
+	})
+	// Auto-complete with failed status since retries were exhausted
+	now := time.Now()
+	entry.Status = EntryStatusFailed
+	entry.StartedAt = &now
+	entry.CompletedAt = &now
+	entry.Error = &EntryError{
+		Message:   data.FinalError,
+		Type:      "retry_exhausted",
+		Retryable: false,
+	}
+	j.State.EntriesPending--
+	j.State.EntriesFailed++
+	j.State.LastError = data.FinalError
+	j.State.LastErrorAt = &now
+	return entry
+}
+
+// AppendCircuitEvent records a circuit breaker state change
+func (j *RunJournal) AppendCircuitEvent(data *CircuitEventData) *JournalEntry {
+	entry := j.AppendEntry(EntryTypeCircuitEvent, &EntryData{
+		CircuitEvent: data,
+	})
+	// Auto-complete circuit events
+	now := time.Now()
+	entry.Status = EntryStatusCompleted
+	entry.StartedAt = &now
+	entry.CompletedAt = &now
+	j.State.EntriesPending--
+	j.State.EntriesExecuted++
+	return entry
+}
+
+// AppendFallbackEvent records a fallback activation
+func (j *RunJournal) AppendFallbackEvent(data *FallbackEventData) *JournalEntry {
+	entry := j.AppendEntry(EntryTypeFallbackEvent, &EntryData{
+		FallbackEvent: data,
+	})
+	// Auto-complete fallback events with status based on outcome
+	now := time.Now()
+	entry.StartedAt = &now
+	entry.CompletedAt = &now
+	j.State.EntriesPending--
+
+	if data.Success {
+		entry.Status = EntryStatusCompleted
+		j.State.EntriesExecuted++
+	} else {
+		entry.Status = EntryStatusFailed
+		entry.Error = &EntryError{
+			Message:   data.Error,
+			Type:      "fallback_failed",
+			Retryable: false,
+		}
+		j.State.EntriesFailed++
+	}
+	return entry
+}
+
+// GetRetryAttempts returns all retry attempt entries for analysis
+func (j *RunJournal) GetRetryAttempts() []*JournalEntry {
+	var attempts []*JournalEntry
+	for i := range j.Entries {
+		if j.Entries[i].Type == EntryTypeRetryAttempt {
+			attempts = append(attempts, &j.Entries[i])
+		}
+	}
+	return attempts
+}
+
+// GetRetryStats returns statistics about retry attempts in this journal
+func (j *RunJournal) GetRetryStats() RetryJournalStats {
+	stats := RetryJournalStats{
+		ByProvider:    make(map[string]int),
+		ByFailureType: make(map[string]int),
+	}
+
+	for i := range j.Entries {
+		entry := &j.Entries[i]
+		switch entry.Type {
+		case EntryTypeRetryAttempt:
+			if entry.Data != nil && entry.Data.RetryAttempt != nil {
+				data := entry.Data.RetryAttempt
+				stats.TotalAttempts++
+				stats.TotalDelayMs += data.DelayMs
+				stats.ByProvider[data.Provider]++
+				stats.ByFailureType[data.FailureType]++
+			}
+		case EntryTypeRetryExhaust:
+			stats.ExhaustedCount++
+		case EntryTypeFallbackEvent:
+			if entry.Data != nil && entry.Data.FallbackEvent != nil {
+				stats.FallbackCount++
+				if entry.Data.FallbackEvent.Success {
+					stats.FallbackSuccesses++
+				}
+			}
+		case EntryTypeCircuitEvent:
+			if entry.Data != nil && entry.Data.CircuitEvent != nil {
+				if entry.Data.CircuitEvent.NewState == "open" {
+					stats.CircuitOpenCount++
+				}
+			}
+		}
+	}
+
+	return stats
+}
+
+// RetryJournalStats provides statistics about retry operations in a journal
+type RetryJournalStats struct {
+	TotalAttempts    int            `json:"totalAttempts"`
+	TotalDelayMs     int64          `json:"totalDelayMs"`
+	ExhaustedCount   int            `json:"exhaustedCount"`
+	FallbackCount    int            `json:"fallbackCount"`
+	FallbackSuccesses int           `json:"fallbackSuccesses"`
+	CircuitOpenCount int            `json:"circuitOpenCount"`
+	ByProvider       map[string]int `json:"byProvider"`
+	ByFailureType    map[string]int `json:"byFailureType"`
 }
 
 // =============================================================================

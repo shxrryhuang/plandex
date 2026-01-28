@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -817,11 +818,17 @@ func (tx *FileTransaction) rollbackOperationToCheckpoint(op *FileOperation, chec
 // SNAPSHOT MANAGEMENT
 // =============================================================================
 
-// captureSnapshot captures the current state of a file
+// captureSnapshot captures the current state of a file and persists it to the
+// snapshot directory so that crash recovery can restore state without
+// relying on in-memory data.
 func (tx *FileTransaction) captureSnapshot(path string) error {
 	// Don't re-capture if we already have a snapshot
 	if _, exists := tx.Snapshots[path]; exists {
 		return nil
+	}
+
+	if err := os.MkdirAll(tx.SnapshotDir, 0755); err != nil {
+		return err
 	}
 
 	snapshot := &FileSnapshot{
@@ -834,7 +841,7 @@ func (tx *FileTransaction) captureSnapshot(path string) error {
 	if os.IsNotExist(err) {
 		snapshot.Existed = false
 		tx.Snapshots[path] = snapshot
-		return nil
+		return tx.writeSnapshotMeta(snapshot)
 	}
 	if err != nil {
 		return err
@@ -848,26 +855,34 @@ func (tx *FileTransaction) captureSnapshot(path string) error {
 		return err
 	}
 
-	// For large files (>1MB), store on disk
-	const maxInMemorySize = 1024 * 1024
-	if len(content) > maxInMemorySize {
-		snapshot.StoredOnDisk = true
-		snapshot.DiskPath = filepath.Join(tx.SnapshotDir, hashString(path)+".snapshot")
+	snapshot.ContentHash = hashString(string(content))
 
-		if err := os.MkdirAll(tx.SnapshotDir, 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(snapshot.DiskPath, content, 0644); err != nil {
-			return err
-		}
-		snapshot.ContentHash = hashString(string(content))
-	} else {
+	// Always persist content to disk for crash recovery durability.
+	snapshot.StoredOnDisk = true
+	snapshot.DiskPath = filepath.Join(tx.SnapshotDir, hashString(path)+".snapshot")
+	if err := os.WriteFile(snapshot.DiskPath, content, 0644); err != nil {
+		return err
+	}
+
+	// Keep small files in memory as well for fast rollback without disk I/O.
+	const maxInMemorySize = 1024 * 1024
+	if len(content) <= maxInMemorySize {
 		snapshot.Content = string(content)
-		snapshot.ContentHash = hashString(snapshot.Content)
 	}
 
 	tx.Snapshots[path] = snapshot
-	return nil
+	return tx.writeSnapshotMeta(snapshot)
+}
+
+// writeSnapshotMeta persists snapshot metadata as JSON so RecoverTransaction
+// can reload it without the in-memory Snapshots map.
+func (tx *FileTransaction) writeSnapshotMeta(snap *FileSnapshot) error {
+	metaPath := filepath.Join(tx.SnapshotDir, hashString(snap.Path)+".meta.json")
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(metaPath, data, 0644)
 }
 
 // cleanupSnapshots removes snapshot files after transaction completes
@@ -970,6 +985,15 @@ func RecoverTransaction(walPath string) (*FileTransaction, error) {
 		}
 	}
 
+	// Derive snapshot directory from WAL path: wal/<txId>.wal -> snapshots/<txId>
+	walDir := filepath.Dir(walPath)
+	plandexDir := filepath.Dir(walDir)
+	tx.SnapshotDir = filepath.Join(plandexDir, "snapshots", tx.Id)
+	tx.BaseDir = filepath.Dir(plandexDir)
+
+	// Reload persisted snapshots so rollback can restore files
+	tx.loadSnapshotsFromDisk()
+
 	// If transaction is still active, we need to decide whether to rollback or continue
 	if tx.State == TxStateActive {
 		// By default, rollback incomplete transactions on recovery
@@ -977,6 +1001,38 @@ func RecoverTransaction(walPath string) (*FileTransaction, error) {
 	}
 
 	return tx, nil
+}
+
+// loadSnapshotsFromDisk reloads snapshot metadata and content from the
+// snapshot directory.  This is used during crash recovery when the
+// in-memory Snapshots map is empty.
+func (tx *FileTransaction) loadSnapshotsFromDisk() {
+	entries, err := os.ReadDir(tx.SnapshotDir)
+	if err != nil {
+		return // snapshot dir may not exist if nothing was staged
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		metaPath := filepath.Join(tx.SnapshotDir, entry.Name())
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var snap FileSnapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			continue
+		}
+		// If content was stored on disk, reload it
+		if snap.StoredOnDisk && snap.DiskPath != "" {
+			if content, err := os.ReadFile(snap.DiskPath); err == nil {
+				snap.Content = string(content)
+			}
+		}
+		tx.Snapshots[snap.Path] = &snap
+	}
 }
 
 // =============================================================================

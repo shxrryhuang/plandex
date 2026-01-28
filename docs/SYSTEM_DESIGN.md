@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
-**Version:** 1.1
-**Last Updated:** January 2026 (Added Recovery & Resilience System)
+**Version:** 1.2
+**Last Updated:** January 2026 (Added Startup & Provider Validation, CI Pipeline, Error Scan)
 
 ---
 
@@ -18,6 +18,7 @@
 9. [Deployment Architecture](#9-deployment-architecture)
 10. [Performance Considerations](#10-performance-considerations)
 11. [Recovery & Resilience System](#11-recovery--resilience-system)
+12. [Startup & Provider Validation](#12-startup--provider-validation)
 
 ---
 
@@ -220,6 +221,10 @@ app/shared/
 ├── context.go                # Context types
 ├── req_res.go                # Request/response wrappers
 │
+├── # Startup & Provider Validation
+├── validation.go             # Validation framework (types, FormatCLI, helpers)
+├── validation_test.go        # 18 unit tests
+│
 ├── # Recovery & Resilience System
 ├── provider_failures.go      # Provider failure classification
 ├── file_transaction.go       # Transactional file operations
@@ -410,6 +415,18 @@ User: plandex tell "add login feature"
 ┌─────────────────┐
 │   CLI: tell     │
 │   command       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Startup        │  ← Synchronous checks: home dir, auth files,
+│  Validation     │    PLANDEX_ENV, debug level, trace file path
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Provider       │  ← Deferred checks: API keys, credential files,
+│  Validation     │    provider compatibility, AWS profile reachability
 └────────┬────────┘
          │ POST /plans/{id}/{branch}/tell
          ▼
@@ -1009,6 +1026,151 @@ app/shared/
 
 ---
 
+## 12. Startup & Provider Validation
+
+### 12.1 Overview
+
+Plandex performs two-phase configuration validation before any plan execution begins. This catches common misconfigurations (missing API keys, invalid paths, incompatible provider combinations) early and surfaces clear, actionable error messages — both in CLI output and in the error registry for run journals.
+
+### 12.2 Two-Phase Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       VALIDATION PIPELINE                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                  Phase 1: Synchronous (Startup)                       │   │
+│  │                  startup_validation.go — RunStartupValidation()       │   │
+│  │                                                                       │   │
+│  │  Runs once per CLI invocation, before any network call:               │   │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐    │   │
+│  │  │  Home Directory  │  │   Auth/Config    │  │  Environment    │    │   │
+│  │  │  • Exists        │  │   Files          │  │  Variables      │    │   │
+│  │  │  • Is directory  │  │   • Valid JSON   │  │  • PLANDEX_ENV  │    │   │
+│  │  │  • Is writable   │  │   • Not empty    │  │  • DEBUG_LEVEL  │    │   │
+│  │  └──────────────────┘  └──────────────────┘  │  • TRACE_FILE   │    │   │
+│  │                                               └─────────────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                  Phase 2: Deferred (Provider-Scoped)                  │   │
+│  │                  startup_validation.go — RunProviderValidation()       │   │
+│  │                                                                       │   │
+│  │  Runs after plan settings are loaded, before the first API call:      │   │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐    │   │
+│  │  │  API Key Vars    │  │  Credential      │  │  Provider       │    │   │
+│  │  │  • Required keys │  │  Files           │  │  Compatibility  │    │   │
+│  │  │  • Extra auth    │  │  • File paths    │  │  • Dual         │    │   │
+│  │  │    vars          │  │    exist         │  │    Anthropic    │    │   │
+│  │  │  • AWS profile   │  │  • Claude Max    │  │    warning      │    │   │
+│  │  │    reachability  │  │    creds         │  │                 │    │   │
+│  │  └──────────────────┘  └──────────────────┘  └─────────────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 12.3 Validation Severity
+
+| Severity | Behaviour |
+|----------|-----------|
+| `fatal` | Halts execution immediately; user must fix before proceeding |
+| `warning` | Printed to stderr; does not block execution |
+
+### 12.4 Validation Categories
+
+Errors are grouped by category in CLI output for clarity:
+
+| Category | What it covers |
+|----------|----------------|
+| `filesystem` | Home directory, auth files, credential file paths, trace file parent |
+| `environment` | `PLANDEX_ENV`, `PLANDEX_DEBUG_LEVEL`, `PLANDEX_TRACE_FILE` |
+| `authentication` | Claude Max sign-in state, credential file presence |
+| `provider` | API keys, extra auth vars, provider compatibility |
+| `configuration` | General config issues |
+
+### 12.5 Integration Points
+
+- **`main.go`** — calls `RunStartupValidation()` for all commands except `version`, `browser`, `help`, `sign-in`, `connect`.
+- **`cmd/tell.go`, `cmd/build.go`, `cmd/continue.go`** — each calls `MustRunDeferredValidation()` immediately before `MustVerifyAuthVars`.
+- **Error Registry** — `ToErrorReport()` persists failed validation results so they appear in the run journal for later diagnosis.
+
+### 12.6 Key Files
+
+```
+app/shared/
+├── validation.go             # Framework: types, FormatCLI, ToErrorReport, helpers
+└── validation_test.go        # 18 unit tests
+
+app/cli/lib/
+└── startup_validation.go     # RunStartupValidation, RunProviderValidation,
+                              #   MustRunDeferredValidation, per-provider checks
+```
+
+### 12.7 Test Coverage
+
+| Component | Tests | What is covered |
+|-----------|-------|-----------------|
+| ValidationResult ops | 6 | New, Add (fatal/warn/nil), Merge, MergeNil |
+| ValidationError interface | 1 | Error() string format |
+| FormatCLI output | 4 | Empty, fatal header, warning header, category grouping |
+| ToErrorReport | 2 | Passed (nil), with fatals (full report) |
+| ValidateEnvVarSet | 3 | Present, whitespace-only, empty |
+| ValidateProviderCompatibility | 4 | No conflict, dual Anthropic, single Claude Max, empty |
+| ValidateFilePath | 2 | Empty path, non-empty path |
+| Timestamp freshness | 1 | Timestamp set between before/after creation |
+| **Total** | **18** | Full validation framework coverage |
+
+### 12.8 CI Pipeline
+
+A dedicated GitHub Actions workflow (`.github/workflows/validation-tests.yml`) runs independently of the main CI suite. It triggers only on changes to validation source files or on a daily 2:30 AM UTC schedule.
+
+| Job | What it does |
+|-----|--------------|
+| `format` | `gofmt` on validation source files |
+| `vet` | `go vet` on `shared` and `cli` modules |
+| `unit-tests` | All 23 tests with `-race`, coverage profile uploaded to Codecov |
+| `build` | Full CLI compile + grep-verification that all integration entry points exist |
+| `summary` | Aggregated pass/fail status table |
+| `notify-on-failure` | Auto-opens a labeled GitHub issue on scheduled-run failure |
+
+A local mirror (`test/run_validation_tests.sh`) sources the existing `test/test_utils.sh` conventions and supports running all checks or individual targets (`format`, `vet`, `unit`, `build`).
+
+### 12.9 Error Message Scan — Known Gaps
+
+A post-implementation scan of the CLI identified error conditions not yet surfaced by the two-phase validation system. They are grouped below by whether the framework could catch them now or whether runtime context is required.
+
+**Catchable at startup (high priority):**
+
+| Error condition | Source location | Why it matters |
+|-----------------|-----------------|----------------|
+| `SHELL` env var empty and `/bin/bash` fallback missing | `lib/apply.go:375` | Apply script execution fails silently |
+| `PLANDEX_API_HOST` set to an invalid URL/hostname | `api/clients.go:25` | Cryptic network errors instead of clear config feedback |
+| `PLANDEX_REPL_OUTPUT_FILE` parent directory does not exist | `stream_tui/run.go:102` | `WriteFile` fails at runtime with no pre-check |
+| `projects-v2.json` contains malformed JSON | `fs/projects.go:31`, `lib/current.go:96` | Same pattern as `auth.json` — framework already supports this |
+| `settings-v2.json` contains malformed JSON | `lib/current.go:198` | Bare unmarshal error on exit |
+
+**Catchable in deferred validation (medium priority):**
+
+| Error condition | Source location | Why it matters |
+|-----------------|-----------------|----------------|
+| `GOOGLE_APPLICATION_CREDENTIALS` file contains invalid JSON | `lib/startup_validation.go:372` | File exists but content is unparseable |
+| `PLANDEX_AWS_PROFILE` names a profile not present in config files | `lib/startup_validation.go:342` | Profile reachability check stops at file existence |
+| `PLANDEX_COLUMNS` is not a valid integer | `term/utils.go:88` | Silently ignored — user never learns their value was rejected |
+| `PLANDEX_STREAM_FOREGROUND_COLOR` is an invalid ANSI code | `term/utils.go:125` | Silently ignored until rendering |
+
+**Requires runtime context (lower priority):**
+
+| Error condition | Source location | Why deferred |
+|-----------------|-----------------|--------------|
+| Project root directory is not writable | `lib/apply.go:356` | Project root only known after plan resolution |
+| Custom editor command not on PATH | `lib/editor.go:75` | Only known after user selects editor |
+| `less` pager command not available | `term/utils.go:49` | Only needed during output display |
+
+---
+
 ## Appendix A: File Reference
 
 ```
@@ -1028,6 +1190,10 @@ Key CLI Files:
 Key Shared Files:
   /app/shared/data_models.go              Core types (15.2 KB)
   /app/shared/ai_models_available.go      Model definitions (29 KB)
+  /app/shared/validation.go               Validation framework (types, helpers)
+
+Key CLI Validation Files:
+  /app/cli/lib/startup_validation.go      Startup + provider validation logic
 ```
 
 ---

@@ -484,8 +484,10 @@ See `app/shared/unrecoverable_errors.go` for:
 - User communication templates with manual actions
 
 See `app/shared/file_transaction.go` for:
-- `RollbackOnProviderFailure()` - Automatic rollback on failure
-- Transaction checkpoints for partial recovery
+- `FileTransaction` — wraps every patch in a WAL-backed transaction with persisted snapshots
+- Sequential apply with reverse-order rollback on any write failure
+- `RecoverTransaction()` — replays orphaned WAL on startup to restore pre-crash state
+- Three-phase rollback: restore (pre-apply content) → remove (newly created files) → sweep (side-effect stragglers)
 
 See `app/server/model/model_error.go` for:
 - HTTP header parsing for Retry-After

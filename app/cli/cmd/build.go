@@ -41,6 +41,8 @@ func build(cmd *cobra.Command, args []string) {
 
 	mustSetPlanExecFlags(cmd, false)
 
+	lib.MustRunDeferredValidation()
+
 	didBuild, err := plan_exec.Build(plan_exec.ExecParams{
 		CurrentPlanId: lib.CurrentPlanId,
 		CurrentBranch: lib.CurrentBranch,

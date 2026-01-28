@@ -16,6 +16,38 @@ import (
 
 type OnStreamFn func(chunk string, buffer string) (shouldStop bool)
 
+// RetryEventCallbacks provides optional callbacks for retry-related events
+// These can be used to integrate with journal logging, metrics, or custom monitoring
+type RetryEventCallbacks struct {
+	// OnRetryAttempt is called before each retry attempt
+	OnRetryAttempt func(data *shared.RetryAttemptData)
+
+	// OnRetryExhaust is called when all retries are exhausted
+	OnRetryExhaust func(data *shared.RetryExhaustData)
+
+	// OnCircuitEvent is called when circuit breaker state changes
+	OnCircuitEvent func(data *shared.CircuitEventData)
+
+	// OnFallbackEvent is called when a fallback is activated
+	OnFallbackEvent func(data *shared.FallbackEventData)
+}
+
+// retryContextKey is used to store retry callbacks in context
+type retryContextKey struct{}
+
+// WithRetryCallbacks adds retry event callbacks to a context
+func WithRetryCallbacks(ctx context.Context, callbacks *RetryEventCallbacks) context.Context {
+	return context.WithValue(ctx, retryContextKey{}, callbacks)
+}
+
+// getRetryCallbacks retrieves retry callbacks from context if available
+func getRetryCallbacks(ctx context.Context) *RetryEventCallbacks {
+	if callbacks, ok := ctx.Value(retryContextKey{}).(*RetryEventCallbacks); ok {
+		return callbacks
+	}
+	return nil
+}
+
 func CreateChatCompletionWithInternalStream(
 	clients map[string]ClientInfo,
 	authVars map[string]string,
@@ -233,6 +265,15 @@ func processChatCompletionStream(
 	}
 }
 
+// withStreamingRetries executes an operation with configurable retry logic,
+// exponential backoff, and circuit breaker integration.
+//
+// The function handles:
+// - Exponential backoff with jitter based on failure type
+// - Retry-After header respect
+// - Circuit breaker checks for provider health
+// - Fallback to alternative models/providers
+// - Comprehensive logging for debugging
 func withStreamingRetries[T any](
 	ctx context.Context,
 	operation func(numRetry int, didProviderFallback bool, modelErr *shared.ModelError) (resp *T, fallbackRes shared.FallbackResult, err error),
@@ -245,10 +286,19 @@ func withStreamingRetries[T any](
 	var modelErr *shared.ModelError
 	var didProviderFallback bool
 
+	// Track retry state for logging and metrics
+	startTime := time.Now()
+	var currentProvider string
+	var currentModel string
+	var failureTypes []string
+
+	// Get retry callbacks from context for journal integration
+	callbacks := getRetryCallbacks(ctx)
+
 	for {
+		// Check for context cancellation
 		if ctx.Err() != nil {
 			if resp != nil {
-				// Return partial result with context error
 				onContextDone(resp, ctx.Err())
 				return resp, ctx.Err()
 			}
@@ -264,21 +314,30 @@ func withStreamingRetries[T any](
 			numRetry = numTotalRetry
 		}
 
-		log.Printf("withStreamingRetries - will run operation")
+		log.Printf("[Retry] Attempt %d (total=%d, fallback=%d, provider_fallback=%v)",
+			numRetry+1, numTotalRetry, numFallbackRetry, didProviderFallback)
 
-		log.Println(spew.Sdump(map[string]interface{}{
-			"numTotalRetry":       numTotalRetry,
-			"didProviderFallback": didProviderFallback,
-			"modelErr":            modelErr,
-		}))
-
+		// Execute the operation
 		resp, fallbackRes, err = operation(numTotalRetry, didProviderFallback, modelErr)
+
+		// Track current provider and model for circuit breaker and logging
+		if fallbackRes.BaseModelConfig != nil {
+			currentProvider = string(fallbackRes.BaseModelConfig.Provider)
+			currentModel = string(fallbackRes.BaseModelConfig.ModelName)
+		}
+
+		// Success - record in circuit breaker and return
 		if err == nil {
+			if GlobalCircuitBreaker != nil && currentProvider != "" {
+				GlobalCircuitBreaker.RecordSuccess(currentProvider)
+			}
+			log.Printf("[Retry] Success after %d attempts (duration=%v)", numTotalRetry+1, time.Since(startTime))
 			return resp, nil
 		}
 
-		log.Printf("withStreamingRetries - operation returned error: %v", err)
+		log.Printf("[Retry] Operation failed: %v", err)
 
+		// Determine retry limits based on fallback state
 		isFallback := fallbackRes.IsFallback
 		maxRetries := MAX_RETRIES_WITHOUT_FALLBACK
 		if isFallback {
@@ -294,48 +353,171 @@ func withStreamingRetries[T any](
 			compareRetries = numFallbackRetry
 		}
 
-		log.Printf("Error in streaming operation: %v, isFallback: %t, numTotalRetry: %d, numFallbackRetry: %d, numRetry: %d, compareRetries: %d, maxRetries: %d\n", err, isFallback, numTotalRetry, numFallbackRetry, numRetry, compareRetries, maxRetries)
-
+		// Classify the error using unified classification
 		classifyRes := classifyBasicError(err, fallbackRes.BaseModelConfig.HasClaudeMaxAuth)
 		modelErr = &classifyRes
 
+		// Also get the ProviderFailure for circuit breaker and detailed logging
+		providerFailure := classifyErrorToProviderFailure(err, currentProvider)
+
+		// Record failure in circuit breaker
+		if GlobalCircuitBreaker != nil && currentProvider != "" && providerFailure != nil {
+			GlobalCircuitBreaker.RecordFailure(currentProvider, providerFailure)
+		}
+
+		// Track failure type for logging
+		if providerFailure != nil {
+			failureTypes = append(failureTypes, string(providerFailure.Type))
+		}
+
+		log.Printf("[Retry] Error classified: kind=%s, retriable=%v, type=%s, provider=%s",
+			modelErr.Kind, modelErr.Retriable, providerFailure.Type, currentProvider)
+
+		// Handle non-retryable errors
 		newFallback := false
 		if !modelErr.Retriable {
-			log.Printf("withStreamingRetries - operation returned non-retriable error: %v", err)
-			spew.Dump(modelErr)
+			log.Printf("[Retry] Non-retriable error: %s", modelErr.Kind)
+
+			// Check for large context fallback
 			if modelErr.Kind == shared.ErrContextTooLong && fallbackRes.ModelRoleConfig.LargeContextFallback == nil {
-				log.Printf("withStreamingRetries - non-retriable context too long error and no large context fallback is defined, returning error")
-				// if it's a context too long error and no large context fallback is defined, return the error
-				return resp, err
-			} else if modelErr.Kind != shared.ErrContextTooLong && fallbackRes.ModelRoleConfig.ErrorFallback == nil {
-				log.Printf("withStreamingRetries - non-retriable error and no error fallback is defined, returning error")
-				// if it's any other error and no error fallback is defined, return the error
+				log.Printf("[Retry] Context too long with no fallback - failing")
 				return resp, err
 			}
-			log.Printf("withStreamingRetries - operation returned non-retriable error, but has fallback - resetting numFallbackRetry to 0 and continuing to retry")
+
+			// Check for error fallback
+			if modelErr.Kind != shared.ErrContextTooLong && fallbackRes.ModelRoleConfig.ErrorFallback == nil {
+				log.Printf("[Retry] Non-retriable error with no fallback - failing")
+				return resp, err
+			}
+
+			// Has fallback - reset fallback retry counter
+			log.Printf("[Retry] Non-retriable error but fallback available - switching to fallback")
 			numFallbackRetry = 0
 			newFallback = true
 			compareRetries = 0
-			// otherwise, continue to retry logic
 		}
 
+		// Check if retries exhausted
 		if compareRetries >= maxRetries {
-			log.Printf("withStreamingRetries - compareRetries >= maxRetries - returning error")
+			log.Printf("[Retry] Max retries reached (%d/%d) - failing", compareRetries, maxRetries)
+
+			// Notify via callback for journal logging
+			if callbacks != nil && callbacks.OnRetryExhaust != nil {
+				callbacks.OnRetryExhaust(&shared.RetryExhaustData{
+					TotalAttempts:   numTotalRetry + 1,
+					TotalDurationMs: time.Since(startTime).Milliseconds(),
+					FailureTypes:    failureTypes,
+					FinalError:      err.Error(),
+					Provider:        currentProvider,
+					Model:           currentModel,
+					FallbackUsed:    isFallback,
+					FallbackType:    string(fallbackRes.FallbackType),
+					Resolution:      "failed",
+				})
+			}
+
 			return resp, err
 		}
 
-		var retryDelay time.Duration
-		if modelErr != nil && modelErr.RetryAfterSeconds > 0 {
-			// if the model err has a retry after, then use that with a bit of padding
-			retryDelay = time.Duration(int(float64(modelErr.RetryAfterSeconds)*1.1)) * time.Second
-		} else {
-			// otherwise, use some jitter
-			retryDelay = time.Duration(1000+rand.Intn(200)) * time.Millisecond
+		// Check circuit breaker before retry
+		if GlobalCircuitBreaker != nil && currentProvider != "" {
+			if GlobalCircuitBreaker.IsOpen(currentProvider) {
+				log.Printf("[Retry] Circuit breaker OPEN for %s - attempting fallback", currentProvider)
+				// If circuit is open and we haven't tried provider fallback, do it now
+				if !didProviderFallback && fallbackRes.ModelRoleConfig != nil {
+					provFallback := fallbackRes.ModelRoleConfig.GetProviderFallback(nil, nil, nil)
+					if provFallback != nil {
+						oldProvider := currentProvider
+						oldModel := currentModel
+
+						didProviderFallback = true
+						newFallback = true
+						numFallbackRetry = 0
+						log.Printf("[Retry] Switching to provider fallback due to circuit breaker")
+
+						// Notify via callback for journal logging
+						if callbacks != nil && callbacks.OnFallbackEvent != nil {
+							callbacks.OnFallbackEvent(&shared.FallbackEventData{
+								FromProvider: oldProvider,
+								ToProvider:   "(provider_fallback)", // Actual provider determined on next operation
+								FromModel:    oldModel,
+								ToModel:      string(provFallback.ModelId),
+								FallbackType: string(shared.FallbackTypeProvider),
+								Reason:       "circuit breaker open",
+								FailureType:  string(providerFailure.Type),
+								ErrorMessage: err.Error(),
+								Success:      true, // Indicates fallback was activated
+							})
+						}
+					}
+				}
+			}
 		}
 
-		log.Printf("withStreamingRetries - retrying stream in %v seconds", retryDelay)
-		time.Sleep(retryDelay)
+		// Calculate retry delay using policy-based exponential backoff
+		var retryDelay time.Duration
+		retryAfterHint := time.Duration(modelErr.RetryAfterSeconds) * time.Second
 
+		// Get retry policy for this failure type
+		policy := modelErr.GetRetryPolicy()
+		if policy != nil {
+			// Use policy-based exponential backoff
+			retryDelay = policy.CalculateDelay(numTotalRetry+1, retryAfterHint)
+			log.Printf("[Retry] Using policy '%s': delay=%v (attempt=%d, retryAfter=%v)",
+				policy.Name, retryDelay, numTotalRetry+1, retryAfterHint)
+		} else if modelErr.RetryAfterSeconds > 0 {
+			// Fallback: use Retry-After with padding
+			retryDelay = time.Duration(float64(modelErr.RetryAfterSeconds)*1.1) * time.Second
+			log.Printf("[Retry] Using Retry-After with padding: delay=%v", retryDelay)
+		} else {
+			// Fallback: simple exponential backoff with jitter
+			baseDelay := 1000 * (1 << numTotalRetry) // 1s, 2s, 4s, 8s...
+			if baseDelay > 30000 {
+				baseDelay = 30000 // Cap at 30 seconds
+			}
+			jitter := rand.Intn(200) - 100 // -100ms to +100ms
+			retryDelay = time.Duration(baseDelay+jitter) * time.Millisecond
+			log.Printf("[Retry] Using default exponential backoff: delay=%v (base=%dms)", retryDelay, baseDelay)
+		}
+
+		log.Printf("[Retry] Waiting %v before attempt %d", retryDelay, numTotalRetry+2)
+
+		// Notify via callback for journal logging
+		willRetry := modelErr.Retriable || newFallback
+		if callbacks != nil && callbacks.OnRetryAttempt != nil {
+			policyName := "default"
+			if policy != nil {
+				policyName = policy.Name
+			}
+
+			callbacks.OnRetryAttempt(&shared.RetryAttemptData{
+				AttemptNumber: numTotalRetry + 1,
+				TotalAttempts: numTotalRetry + 1,
+				FailureType:   string(providerFailure.Type),
+				ErrorMessage:  err.Error(),
+				HTTPCode:      providerFailure.HTTPCode,
+				Provider:      currentProvider,
+				Model:         currentModel,
+				PolicyUsed:    policyName,
+				DelayMs:       retryDelay.Milliseconds(),
+				WillRetry:     willRetry,
+				Retryable:     modelErr.Retriable,
+			})
+		}
+
+		// Wait with context awareness
+		select {
+		case <-ctx.Done():
+			if resp != nil {
+				onContextDone(resp, ctx.Err())
+				return resp, ctx.Err()
+			}
+			return nil, ctx.Err()
+		case <-time.After(retryDelay):
+			// Continue to next retry
+		}
+
+		// Increment retry counters
 		if modelErr != nil && modelErr.ShouldIncrementRetry() {
 			numTotalRetry++
 			if isFallback && !newFallback {

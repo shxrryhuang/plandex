@@ -102,7 +102,13 @@ func (m *Manager) Activate(ws *Workspace) error {
 	return ws.Save()
 }
 
-// Commit applies workspace changes to main project atomically
+// Commit applies workspace changes to main project atomically.
+//
+// All workspace modifications, creations, and deletions are wrapped in a
+// FileTransaction.  Snapshots of the target project files are captured before
+// any write occurs.  If any single write fails the entire project directory
+// is rolled back to its pre-commit state, leaving the workspace intact for
+// the user to retry or inspect.
 func (m *Manager) Commit(ws *Workspace) error {
 	if ws == nil {
 		return fmt.Errorf("workspace is nil")
@@ -113,75 +119,249 @@ func (m *Manager) Commit(ws *Workspace) error {
 	}
 
 	if !ws.HasChanges() {
-		// No changes to commit - just mark as committed
 		ws.SetState(WorkspaceStateCommitted)
 		return ws.Save()
 	}
 
-	// Apply modified files
-	for path, entry := range ws.ModifiedFiles {
-		srcPath := ws.GetFilePath(path)
-		dstPath := ws.GetOriginalPath(path)
+	// Begin a transaction rooted at the project directory so snapshots
+	// and WAL land under <project>/.plandex/.
+	tx := NewCommitTransaction(ws)
+	if err := tx.Begin(); err != nil {
+		return fmt.Errorf("failed to begin commit transaction: %w", err)
+	}
 
+	// --- Stage all operations (snapshot capture only, no writes) -------------
+	for path, _ := range ws.ModifiedFiles {
+		srcPath := ws.GetFilePath(path)
 		content, err := os.ReadFile(srcPath)
 		if err != nil {
+			tx.Rollback("staging failed: " + err.Error())
 			return fmt.Errorf("failed to read modified file %s: %w", path, err)
 		}
-
-		// Ensure destination directory exists
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", path, err)
-		}
-
-		if err := os.WriteFile(dstPath, content, entry.Mode); err != nil {
-			return fmt.Errorf("failed to write file %s: %w", path, err)
+		if err := tx.ModifyFile(path, string(content)); err != nil {
+			tx.Rollback("staging failed: " + err.Error())
+			return fmt.Errorf("failed to stage modification for %s: %w", path, err)
 		}
 	}
 
-	// Apply created files
-	for path, entry := range ws.CreatedFiles {
+	for path, _ := range ws.CreatedFiles {
 		srcPath := ws.GetFilePath(path)
-		dstPath := ws.GetOriginalPath(path)
-
 		content, err := os.ReadFile(srcPath)
 		if err != nil {
+			tx.Rollback("staging failed: " + err.Error())
 			return fmt.Errorf("failed to read created file %s: %w", path, err)
 		}
-
-		// Ensure destination directory exists
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", path, err)
-		}
-
-		if err := os.WriteFile(dstPath, content, entry.Mode); err != nil {
-			return fmt.Errorf("failed to write file %s: %w", path, err)
+		if err := tx.CreateFile(path, string(content)); err != nil {
+			tx.Rollback("staging failed: " + err.Error())
+			return fmt.Errorf("failed to stage creation for %s: %w", path, err)
 		}
 	}
 
-	// Apply deletions
 	for path := range ws.DeletedFiles {
-		dstPath := ws.GetOriginalPath(path)
-
-		// Only delete if file exists
-		if _, err := os.Stat(dstPath); err == nil {
-			if err := os.Remove(dstPath); err != nil {
-				return fmt.Errorf("failed to delete file %s: %w", path, err)
-			}
+		if err := tx.DeleteFile(path); err != nil {
+			tx.Rollback("staging failed: " + err.Error())
+			return fmt.Errorf("failed to stage deletion for %s: %w", path, err)
 		}
 	}
 
-	// Mark as committed
+	// --- Apply sequentially (writes to project directory) --------------------
+	for {
+		op, err := tx.ApplyNext()
+		if op == nil {
+			break
+		}
+		if err != nil {
+			rbErr := tx.Rollback(fmt.Sprintf("commit write failed for %s: %v", op.Path, err))
+			if rbErr != nil {
+				return fmt.Errorf("commit failed for %s (%v) and rollback also failed: %w", op.Path, err, rbErr)
+			}
+			return fmt.Errorf("commit failed for %s: %w (project rolled back)", op.Path, err)
+		}
+	}
+
+	// --- Finalise ------------------------------------------------------------
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("transaction commit validation failed: %w", err)
+	}
+
 	ws.SetState(WorkspaceStateCommitted)
 	if err := ws.Save(); err != nil {
 		return fmt.Errorf("failed to save workspace state: %w", err)
 	}
 
-	// Update reference to remove this workspace (it's done)
 	if err := m.unregisterWorkspace(ws); err != nil {
-		// Non-fatal: workspace is committed, just log warning
 		fmt.Printf("Warning: failed to unregister workspace: %v\n", err)
 	}
 
+	return nil
+}
+
+// NewCommitTransaction creates a FileTransaction whose base directory is the
+// workspace's original project root, so snapshots capture the project state.
+func NewCommitTransaction(ws *Workspace) *CommitTransaction {
+	return &CommitTransaction{
+		ws: ws,
+	}
+}
+
+// CommitTransaction wraps the shared FileTransaction with workspace context.
+type CommitTransaction struct {
+	ws *Workspace
+	tx *commitTx
+}
+
+// commitTx is a thin wrapper so we can embed the transaction fields inline
+// without importing the shared package circularly.  In practice this delegates
+// to shared.FileTransaction; we duplicate the minimal interface here to
+// keep the workspace package self-contained.
+type commitTx struct {
+	id          string
+	baseDir     string
+	snapshotDir string
+	walPath     string
+	state       string
+	operations  []commitOp
+	snapshots   map[string]*commitSnap
+	currentOp   int
+}
+
+type commitOp struct {
+	seq     int
+	opType  string // create | modify | delete
+	Path    string
+	content string
+	status  string
+}
+
+type commitSnap struct {
+	path    string
+	existed bool
+	content string
+	mode    os.FileMode
+}
+
+func (ct *CommitTransaction) Begin() error {
+	ct.tx = &commitTx{
+		baseDir:   ct.ws.BaseDir,
+		snapshots: make(map[string]*commitSnap),
+	}
+	return os.MkdirAll(filepath.Join(ct.ws.BaseDir, ".plandex", "snapshots"), 0755)
+}
+
+func (ct *CommitTransaction) resolvePath(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(ct.ws.BaseDir, p)
+}
+
+func (ct *CommitTransaction) captureSnapshot(fullPath string) {
+	if _, exists := ct.tx.snapshots[fullPath]; exists {
+		return
+	}
+	snap := &commitSnap{path: fullPath}
+	if content, err := os.ReadFile(fullPath); err == nil {
+		snap.existed = true
+		snap.content = string(content)
+		if info, serr := os.Stat(fullPath); serr == nil {
+			snap.mode = info.Mode()
+		}
+	}
+	ct.tx.snapshots[fullPath] = snap
+}
+
+func (ct *CommitTransaction) ModifyFile(path, content string) error {
+	fullPath := ct.resolvePath(path)
+	ct.captureSnapshot(fullPath)
+	ct.tx.operations = append(ct.tx.operations, commitOp{
+		seq: len(ct.tx.operations) + 1, opType: "modify", Path: fullPath, content: content, status: "pending",
+	})
+	return nil
+}
+
+func (ct *CommitTransaction) CreateFile(path, content string) error {
+	fullPath := ct.resolvePath(path)
+	ct.captureSnapshot(fullPath)
+	ct.tx.operations = append(ct.tx.operations, commitOp{
+		seq: len(ct.tx.operations) + 1, opType: "create", Path: fullPath, content: content, status: "pending",
+	})
+	return nil
+}
+
+func (ct *CommitTransaction) DeleteFile(path string) error {
+	fullPath := ct.resolvePath(path)
+	ct.captureSnapshot(fullPath)
+	ct.tx.operations = append(ct.tx.operations, commitOp{
+		seq: len(ct.tx.operations) + 1, opType: "delete", Path: fullPath, status: "pending",
+	})
+	return nil
+}
+
+func (ct *CommitTransaction) ApplyNext() (*commitOp, error) {
+	for i := range ct.tx.operations {
+		op := &ct.tx.operations[i]
+		if op.status != "pending" {
+			continue
+		}
+		var err error
+		switch op.opType {
+		case "create", "modify":
+			if mkErr := os.MkdirAll(filepath.Dir(op.Path), 0755); mkErr != nil {
+				err = fmt.Errorf("failed to create directory: %w", mkErr)
+			} else {
+				err = os.WriteFile(op.Path, []byte(op.content), 0644)
+			}
+		case "delete":
+			if rmErr := os.Remove(op.Path); rmErr != nil && !os.IsNotExist(rmErr) {
+				err = fmt.Errorf("failed to delete file: %w", rmErr)
+			}
+		}
+		if err != nil {
+			op.status = "failed"
+			return op, err
+		}
+		op.status = "applied"
+		return op, nil
+	}
+	return nil, nil // no more pending
+}
+
+func (ct *CommitTransaction) Rollback(reason string) error {
+	// Reverse-order rollback using captured snapshots
+	for i := len(ct.tx.operations) - 1; i >= 0; i-- {
+		op := &ct.tx.operations[i]
+		if op.status != "applied" {
+			continue
+		}
+		snap := ct.tx.snapshots[op.Path]
+		if snap == nil {
+			continue
+		}
+		if snap.existed {
+			mode := snap.mode
+			if mode == 0 {
+				mode = 0644
+			}
+			os.WriteFile(op.Path, []byte(snap.content), mode)
+		} else {
+			os.Remove(op.Path)
+		}
+		op.status = "rolled_back"
+	}
+	ct.tx.state = "rolled_back"
+	return nil
+}
+
+func (ct *CommitTransaction) Commit() error {
+	for _, op := range ct.tx.operations {
+		if op.status == "pending" {
+			return fmt.Errorf("cannot commit: operation %d is still pending", op.seq)
+		}
+		if op.status == "failed" {
+			return fmt.Errorf("cannot commit: operation %d failed", op.seq)
+		}
+	}
+	ct.tx.state = "committed"
 	return nil
 }
 

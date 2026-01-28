@@ -97,5 +97,35 @@ func main() {
 		checkForUpgrade()
 	}
 
+	// Run synchronous startup validation before any plan execution.
+	// Commands that do not touch plans (version, help, sign-in) skip this.
+	if firstArg != "version" && firstArg != "browser" && firstArg != "help" &&
+		firstArg != "h" && firstArg != "sign-in" && firstArg != "connect" {
+		runStartupChecks()
+	}
+
 	cmd.Execute()
+}
+
+// runStartupChecks executes synchronous validation and exits with a clear
+// message if any fatal checks fail.
+func runStartupChecks() {
+	result := lib.RunStartupValidation()
+	if result.Passed {
+		return
+	}
+
+	// Print the validation output to stderr so it is always visible.
+	fmt.Fprint(os.Stderr, "\n")
+	fmt.Fprint(os.Stderr, result.FormatCLI())
+
+	// Persist the error report so it shows up in run journals / error registry.
+	if report := result.ToErrorReport(); report != nil {
+		shared.StoreError(report)
+		if shared.GlobalErrorRegistry != nil {
+			shared.GlobalErrorRegistry.Persist()
+		}
+	}
+
+	os.Exit(1)
 }

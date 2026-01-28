@@ -25,20 +25,25 @@ func MustLoadIp() {
 }
 
 func MustInitDb() {
+	log.Println("Connecting to database...")
 	err := db.Connect()
 	if err != nil {
-		log.Fatal("Error initializing database: ", err)
+		log.Fatal("❌ Error initializing database: ", err)
 	}
+	log.Println("✅ Database connection established")
 
+	log.Println("Running database migrations...")
 	err = db.MigrationsUp()
 	if err != nil {
-		log.Fatal("Error running migrations: ", err)
+		log.Fatal("❌ Error running migrations: ", err)
 	}
 
+	log.Println("Caching organization role IDs...")
 	err = db.CacheOrgRoleIds()
 	if err != nil {
-		log.Fatal("Error caching org role ids: ", err)
+		log.Fatal("❌ Error caching org role ids: ", err)
 	}
+	log.Println("✅ Database initialization complete")
 }
 
 var shutdownHooks []func()

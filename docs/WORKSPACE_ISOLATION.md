@@ -8,7 +8,7 @@ The Workspace Isolation System provides a safe environment for Plandex to execut
 
 - **Safety**: Your main project files are protected until you explicitly apply changes
 - **Review**: Preview and review all changes before they affect your project
-- **Rollback**: Easily discard unwanted changes without affecting your work
+- **Rollback**: Atomic, transactional rollback restores the workspace to its pre-apply state — all-or-nothing, with per-file status output
 - **Resume**: Workspace state persists across sessions for continuity
 - **Recovery**: Automatic recovery from crashes and partial runs
 
@@ -70,10 +70,14 @@ plandex workspace commit
 plandex workspace commit --force  # Skip confirmation
 ```
 
-This applies all workspace changes to your main project:
-- Modified files are overwritten
-- New files are created
-- Deleted files are removed
+This applies all workspace changes to your main project via a `CommitTransaction`:
+
+1. **Stage** — snapshots of the current *project* files are captured to disk (WAL + `.snapshot` + `.meta.json`)
+2. **Apply** — modified/created/deleted files are written sequentially to the project directory
+3. **Rollback on failure** — if any write fails, all previously applied operations are reverted in reverse order; the project directory is left unchanged and the workspace remains intact for retry
+4. **Finalise** — workspace is marked as committed and unregistered
+
+The entire operation is all-or-nothing: either every file lands in the project or none do.
 
 #### Discard Workspace Changes
 
@@ -195,12 +199,15 @@ These are set automatically when running shell commands in workspace context.
 
 ### Crash Recovery
 
-If Plandex crashes during an operation:
+If Plandex crashes during an apply or commit operation:
 
-1. On next startup, the system scans for incomplete workspaces
-2. Recovery markers indicate in-flight operations
-3. The workspace is restored to the last known good state
-4. User is notified of any recovered workspaces
+1. On next startup, orphaned WAL files under `.plandex/wal/` are detected
+2. `RecoverTransaction()` replays each WAL to determine which operations completed vs. which were pending
+3. `loadSnapshotsFromDisk()` reloads every `.meta.json` and its `.snapshot` content into memory
+4. The incomplete transaction is automatically rolled back, restoring every file to its pre-transaction state
+5. User is notified of any recovered workspaces
+
+Because snapshots are flushed to disk *before* any write begins, even a hard crash between staging and applying leaves all recovery data intact.
 
 ### User Cancellation (Ctrl+C)
 
@@ -366,8 +373,11 @@ Files are tracked with:
 
 ### Rollback
 
-- `Rollback()` restores previous workspace state
-- Does not affect main project unless committed
+- `RollbackWorkspace()` restores workspace files using snapshots captured during the apply
+- Operates in two phases: **restore** (revert files that existed before) then **remove** (delete files newly created by the apply)
+- Workspace tracking is updated *surgically* — only the entries touched by this apply's rollback plan are removed; earlier workspace modifications remain intact
+- Per-file coloured output: `↩ restored` / `↩ removed` (green) or `✗ restore` / `✗ remove` (red), with a summary footer
+- Does not affect the main project unless workspace has been committed
 - Original project remains pristine
 
 ### Branches

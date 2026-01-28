@@ -234,17 +234,26 @@ type ReplayDivergence struct {
 
 // ReplayOptions configures replay behavior
 type ReplayOptions struct {
-	Mode              ReplayMode `json:"mode"`
-	StartFromStep     int        `json:"startFromStep,omitempty"`
-	EndAtStep         int        `json:"endAtStep,omitempty"`
-	PauseBeforeStep   []int      `json:"pauseBeforeStep,omitempty"`
-	PauseAfterStep    []int      `json:"pauseAfterStep,omitempty"`
-	SkipSteps         []int      `json:"skipSteps,omitempty"`
-	AutoAdvance       bool       `json:"autoAdvance"`
-	StepDelayMs       int        `json:"stepDelayMs,omitempty"`
-	CaptureSnapshots  bool       `json:"captureSnapshots"`
-	ValidateChecksums bool       `json:"validateChecksums"`
-	StopOnDivergence  bool       `json:"stopOnDivergence"`
+	Mode            ReplayMode `json:"mode"`
+	StartFromStep   int        `json:"startFromStep,omitempty"`
+	EndAtStep       int        `json:"endAtStep,omitempty"`
+	PauseBeforeStep []int      `json:"pauseBeforeStep,omitempty"`
+	PauseAfterStep  []int      `json:"pauseAfterStep,omitempty"`
+	SkipSteps       []int      `json:"skipSteps,omitempty"`
+	AutoAdvance     bool       `json:"autoAdvance"`
+	StepDelayMs     int        `json:"stepDelayMs,omitempty"`
+
+	// CaptureSnapshots controls whether the replay engine validates that
+	// per-file snapshots (.snapshot + .meta.json) exist on disk for every
+	// file write step.  The underlying FileTransaction always persists
+	// snapshots before writing — this flag does not control that behaviour.
+	// When true the replay engine additionally verifies snapshot integrity
+	// (hash match, completeness) and reports divergence if a snapshot is
+	// missing or corrupt.  Default: true.
+	CaptureSnapshots bool `json:"captureSnapshots"`
+
+	ValidateChecksums bool `json:"validateChecksums"`
+	StopOnDivergence  bool `json:"stopOnDivergence"`
 }
 
 // ReplayStepResult is returned after executing a single step

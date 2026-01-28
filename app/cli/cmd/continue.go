@@ -51,6 +51,8 @@ func doContinue(cmd *cobra.Command, args []string) {
 		SkipChangesMenu: tellSkipMenu,
 	}
 
+	lib.MustRunDeferredValidation()
+
 	plan_exec.TellPlan(plan_exec.ExecParams{
 		CurrentPlanId: lib.CurrentPlanId,
 		CurrentBranch: lib.CurrentBranch,

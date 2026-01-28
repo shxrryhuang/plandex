@@ -227,29 +227,117 @@ func normalizeUnit(numStr, unit string) int {
 	}
 }
 
+// classifyBasicError uses the unified ProviderFailure classification system
+// and converts the result to a ModelError for backwards compatibility
 func classifyBasicError(err error, isClaudeMax bool) shared.ModelError {
-	// if it's an http error, classify it based on the status code and body
+	return classifyBasicErrorWithProvider(err, isClaudeMax, "")
+}
+
+// classifyBasicErrorWithProvider is like classifyBasicError but also takes a provider hint
+// for more accurate classification of provider-specific errors
+func classifyBasicErrorWithProvider(err error, isClaudeMax bool, provider string) shared.ModelError {
+	var httpCode int
+	var body string
+	var headers http.Header
+
+	// Extract HTTP details if available
 	if httpErr, ok := err.(*HTTPError); ok {
-		me := ClassifyModelError(
-			httpErr.StatusCode,
-			httpErr.Body,
-			httpErr.Header,
-			isClaudeMax,
-		)
-		return me
+		httpCode = httpErr.StatusCode
+		body = httpErr.Body
+		headers = httpErr.Header
+	} else {
+		// Use error message as body for classification
+		body = err.Error()
 	}
 
-	// try to classify the error based on the message only
-	msgRes := ClassifyErrMsg(err.Error())
-	if msgRes != nil {
-		return *msgRes
+	// For HTTP errors, use the full classification flow
+	if httpCode > 0 {
+		return classifyHTTPError(httpCode, body, headers, isClaudeMax, provider)
 	}
 
-	// Fall back to old heuristic – still keeps the signature identical
+	// For non-HTTP errors (plain error messages), use message-based classification first
+	// This preserves the original behavior of ClassifyErrMsg
+
+	// First, check for non-retryable context errors
 	if isNonRetriableBasicErr(err) {
 		return shared.ModelError{Kind: shared.ErrOther, Retriable: false}
 	}
+
+	// Try message-based classification
+	msgRes := ClassifyErrMsg(body)
+	if msgRes != nil {
+		log.Printf("classifyBasicError: classified via message: kind=%s, retriable=%v",
+			msgRes.Kind, msgRes.Retriable)
+		return *msgRes
+	}
+
+	// For unknown errors without HTTP code, assume retryable (generic transient errors)
+	// This preserves the original behavior for things like "temporary network failure"
+	log.Printf("classifyBasicError: unknown error without HTTP code - assuming retriable")
 	return shared.ModelError{Kind: shared.ErrOther, Retriable: true}
+}
+
+// classifyHTTPError handles classification for HTTP errors with status codes
+func classifyHTTPError(httpCode int, body string, headers http.Header, isClaudeMax bool, provider string) shared.ModelError {
+	// Use unified classification from ProviderFailure
+	pf := shared.ClassifyProviderFailure(httpCode, "", body, provider)
+
+	// Handle Claude Max special case: 429 = subscription quota exhausted
+	if isClaudeMax && httpCode == 429 {
+		pf.Type = shared.FailureTypeQuotaExhausted
+		// Check for retry-after to determine if it's retriable
+		retryAfter := extractRetryAfter(headers, body)
+		if retryAfter > 0 && retryAfter <= MAX_RETRY_DELAY_SECONDS {
+			pf.Retryable = true
+			pf.RetryAfterSeconds = retryAfter
+		} else {
+			pf.Retryable = false
+		}
+	}
+
+	// Extract retry-after for retryable errors
+	if pf.Retryable && pf.RetryAfterSeconds == 0 {
+		retryAfter := extractRetryAfter(headers, body)
+		if retryAfter > MAX_RETRY_DELAY_SECONDS {
+			// If retry-after is too long, mark as non-retryable
+			log.Printf("Retry after %d seconds exceeds max delay of %d seconds - marking as non-retryable",
+				retryAfter, MAX_RETRY_DELAY_SECONDS)
+			pf.Retryable = false
+		} else if retryAfter > 0 {
+			pf.RetryAfterSeconds = retryAfter
+		}
+	}
+
+	// Convert to ModelError for backwards compatibility
+	result := shared.FromProviderFailure(pf)
+	if result == nil {
+		// Fallback if conversion fails
+		return shared.ModelError{
+			Kind:      shared.ErrOther,
+			Retriable: false,
+		}
+	}
+
+	log.Printf("classifyBasicError: type=%s, kind=%s, retriable=%v, retryAfter=%d",
+		pf.Type, result.Kind, result.Retriable, result.RetryAfterSeconds)
+
+	return *result
+}
+
+// classifyErrorToProviderFailure directly returns a ProviderFailure for cases
+// where the full classification is needed (e.g., circuit breaker, journal logging)
+func classifyErrorToProviderFailure(err error, provider string) *shared.ProviderFailure {
+	var httpCode int
+	var body string
+
+	if httpErr, ok := err.(*HTTPError); ok {
+		httpCode = httpErr.StatusCode
+		body = httpErr.Body
+	} else {
+		body = err.Error()
+	}
+
+	return shared.ClassifyProviderFailure(httpCode, "", body, provider)
 }
 
 func isNonRetriableBasicErr(err error) bool {
