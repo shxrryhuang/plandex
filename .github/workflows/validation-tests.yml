@@ -1,0 +1,457 @@
+# Validation Phase Tests Pipeline
+#
+# Dedicated CI pipeline for the two-phase startup & provider validation system.
+# Runs independently of the main CI workflow so validation regressions are
+# caught without blocking unrelated work, and validation changes trigger
+# targeted runs without re-executing the full server test suite.
+#
+# Jobs:
+#   1. format     — gofmt check on shared and cli
+#   2. vet        — go vet on shared and cli
+#   3. unit-tests — validation_test.go with race detection and coverage
+#   4. build      — full CLI build to verify integration points compile
+#   5. summary    — aggregated status report
+#   6. notify     — auto-creates a GitHub issue on scheduled-run failure
+#
+# Triggers:
+#   - Push/PR touching validation source, CLI entry points, or this workflow
+#   - Manual dispatch (workflow_dispatch)
+#   - Scheduled daily at 2:30 AM UTC (offset from main scheduled tests at 2 AM)
+#
+# Updated: January 2026
+#
+name: Validation Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'app/shared/validation.go'
+      - 'app/shared/validation_test.go'
+      - 'app/cli/lib/startup_validation.go'
+      - 'app/cli/main.go'
+      - 'app/cli/cmd/tell.go'
+      - 'app/cli/cmd/build.go'
+      - 'app/cli/cmd/continue.go'
+      - '.github/workflows/validation-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/shared/validation.go'
+      - 'app/shared/validation_test.go'
+      - 'app/cli/lib/startup_validation.go'
+      - 'app/cli/main.go'
+      - 'app/cli/cmd/tell.go'
+      - 'app/cli/cmd/build.go'
+      - 'app/cli/cmd/continue.go'
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_coverage_report:
+        description: 'Generate HTML coverage report artifact'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  GO_VERSION: '1.23'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. FORMAT — ensure validation source is gofmt-clean
+  # ---------------------------------------------------------------------------
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check formatting (shared)
+        run: |
+          cd app/shared
+          unformatted=$(gofmt -l validation.go validation_test.go 2>/dev/null)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Unformatted validation files in app/shared:"
+            echo "$unformatted"
+            echo "Run 'gofmt -w .' to fix."
+            exit 1
+          fi
+          echo "✅ shared validation files are formatted."
+
+      - name: Check formatting (cli/lib)
+        run: |
+          cd app/cli
+          unformatted=$(gofmt -l lib/startup_validation.go 2>/dev/null)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Unformatted validation files in app/cli/lib:"
+            echo "$unformatted"
+            echo "Run 'gofmt -w .' to fix."
+            exit 1
+          fi
+          echo "✅ cli validation files are formatted."
+
+  # ---------------------------------------------------------------------------
+  # 2. VET — static analysis on both modules
+  # ---------------------------------------------------------------------------
+  vet:
+    name: Go Vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Vet shared module
+        run: |
+          cd app/shared
+          go vet ./...
+          echo "✅ go vet passed for app/shared"
+
+      - name: Vet cli module
+        run: |
+          cd app/cli
+          go vet ./...
+          echo "✅ go vet passed for app/cli"
+
+  # ---------------------------------------------------------------------------
+  # 3. UNIT TESTS — race-safe execution with coverage
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: Validation Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download shared dependencies
+        run: |
+          cd app/shared
+          go mod download
+
+      # --- Validation framework tests (validation_test.go) ---
+      - name: Run validation framework tests
+        run: |
+          cd app/shared
+          echo "## Validation Framework Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -coverprofile=validation-coverage.out -covermode=atomic \
+            -run "TestValidationResult|TestValidationError|TestValidateEnvVarSet|TestValidateProviderCompatibility|TestValidateFilePath|TestValidationResult_Timestamp" \
+            ./... 2>&1 | tee validation-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" validation-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" validation-tests.txt || echo "0")
+          RACES=$(grep -c "WARNING: DATA RACE" validation-tests.txt || echo "0")
+
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Data Races | $RACES |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED validation framework test(s) failed"
+            exit 1
+          fi
+          if [ "$RACES" -gt 0 ]; then
+            echo "::error::Data race detected in validation code"
+            exit 1
+          fi
+
+      # --- FormatCLI output tests ---
+      - name: Run FormatCLI output tests
+        run: |
+          cd app/shared
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## FormatCLI Output Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -run "TestValidationResult_FormatCLI" ./... 2>&1 | tee format-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" format-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" format-tests.txt || echo "0")
+
+          echo "| Result | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::FormatCLI tests failed"
+            exit 1
+          fi
+
+      # --- ToErrorReport integration tests ---
+      - name: Run ToErrorReport conversion tests
+        run: |
+          cd app/shared
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ToErrorReport Conversion Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -run "TestValidationResult_ToErrorReport" ./... 2>&1 | tee report-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" report-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" report-tests.txt || echo "0")
+
+          echo "| Result | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::ToErrorReport tests failed"
+            exit 1
+          fi
+
+      # --- Provider compatibility tests ---
+      - name: Run provider compatibility tests
+        run: |
+          cd app/shared
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Provider Compatibility Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          go test -v -race -run "TestValidateProviderCompatibility" ./... 2>&1 | tee compat-tests.txt
+
+          PASSED=$(grep -c "^--- PASS:" compat-tests.txt || echo "0")
+          FAILED=$(grep -c "^--- FAIL:" compat-tests.txt || echo "0")
+
+          echo "| Result | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::Provider compatibility tests failed"
+            exit 1
+          fi
+
+      # --- Coverage report ---
+      - name: Generate coverage summary
+        run: |
+          cd app/shared
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=validation-coverage.out | grep -E "validation|TOTAL" >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: app/shared/validation-coverage.out
+          flags: validation
+          fail_ci_if_error: false
+
+      - name: Upload HTML coverage report
+        if: ${{ github.event.inputs.run_coverage_report != 'false' }}
+        run: |
+          cd app/shared
+          go tool cover -html=validation-coverage.out -o validation-coverage.html
+        continue-on-error: true
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-test-logs-${{ github.run_id }}
+          path: |
+            app/shared/validation-tests.txt
+            app/shared/format-tests.txt
+            app/shared/report-tests.txt
+            app/shared/compat-tests.txt
+            app/shared/validation-coverage.out
+            app/shared/validation-coverage.html
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 4. BUILD — compile CLI to verify integration points
+  # ---------------------------------------------------------------------------
+  build:
+    name: CLI Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build CLI module
+        run: |
+          cd app/cli
+          go build ./... 2>&1 | tee build-output.txt
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "::error::CLI build failed — validation integration points broken"
+            exit 1
+          fi
+
+          echo "✅ CLI builds cleanly with validation integration" >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify validation entry points exist
+        run: |
+          cd app/cli
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Integration Point Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Verify MustRunDeferredValidation is referenced in tell, build, continue
+          for cmd in tell build continue; do
+            if grep -q "MustRunDeferredValidation" "cmd/${cmd}.go"; then
+              echo "| \`cmd/${cmd}.go\` | ✅ MustRunDeferredValidation present |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| \`cmd/${cmd}.go\` | ❌ MustRunDeferredValidation MISSING |" >> $GITHUB_STEP_SUMMARY
+              echo "::error::MustRunDeferredValidation not found in cmd/${cmd}.go"
+              exit 1
+            fi
+          done
+
+          # Verify RunStartupValidation is called from main.go
+          if grep -q "RunStartupValidation" "main.go"; then
+            echo "| \`main.go\` | ✅ RunStartupValidation present |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| \`main.go\` | ❌ RunStartupValidation MISSING |" >> $GITHUB_STEP_SUMMARY
+            echo "::error::RunStartupValidation not found in main.go"
+            exit 1
+          fi
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-build-logs-${{ github.run_id }}
+          path: app/cli/build-output.txt
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 5. SUMMARY — aggregate job statuses
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [format, vet, unit-tests, build]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Validation Tests Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Format Check | ${{ needs.format.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Go Vet | ${{ needs.vet.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CLI Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.format.result }}" == "failure" ] || \
+             [ "${{ needs.vet.result }}" == "failure" ] || \
+             [ "${{ needs.unit-tests.result }}" == "failure" ] || \
+             [ "${{ needs.build.result }}" == "failure" ]; then
+            echo "⚠️ **Some validation pipeline jobs failed.**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Review the failed job logs above for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **All validation pipeline jobs passed.**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 6. NOTIFY — create GitHub issue on scheduled-run failure
+  # ---------------------------------------------------------------------------
+  notify-on-failure:
+    name: Notify on Failure
+    needs: [format, vet, unit-tests, build]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Validation Pipeline Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Validation Pipeline Failure
+
+            The scheduled validation test run has failed.
+
+            **Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            **Date:** ${new Date().toISOString()}
+
+            ### Failed Jobs
+            - Format: ${{ needs.format.result }}
+            - Vet: ${{ needs.vet.result }}
+            - Unit Tests: ${{ needs.unit-tests.result }}
+            - CLI Build: ${{ needs.build.result }}
+
+            ### Affected Files
+            - \`app/shared/validation.go\` — validation framework
+            - \`app/shared/validation_test.go\` — unit tests
+            - \`app/cli/lib/startup_validation.go\` — CLI validation logic
+            - \`app/cli/main.go\` — startup hook
+            - \`app/cli/cmd/{tell,build,continue}.go\` — deferred validation hooks
+
+            ### Next Steps
+            1. Check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details
+            2. Run \`cd app/shared && go test -v -race -run TestValidat ./...\` locally
+            3. Run \`cd app/cli && go build ./...\` to check compile errors
+
+            /cc @team-leads
+            `;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'validation-pipeline-failure'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['bug', 'validation-pipeline-failure', 'automated', 'priority-high']
+              });
+            }

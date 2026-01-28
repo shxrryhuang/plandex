@@ -58,6 +58,50 @@ AWS_SESSION_TOKEN= # Your AWS session token
 AWS_INFERENCE_PROFILE_ARN= # Your AWS inference profile ARN
 ```
 
+### Startup Validation
+
+Plandex runs automatic configuration checks before executing any plan command. The following variables are validated at startup:
+
+```bash
+PLANDEX_ENV= # Must be 'development', 'production', or unset. Any other value is rejected at startup.
+PLANDEX_DEBUG_LEVEL= # If set, must be 'verbose', 'normal', 'minimal', or unset. Unrecognised values produce a warning.
+PLANDEX_TRACE_FILE= # If set, the parent directory must exist. Plandex checks this before any plan execution begins.
+PLANDEX_API_HOST= # If set, must be a reachable hostname or URL. An invalid value causes cryptic network errors later.
+```
+
+In addition to these env vars, Plandex validates at startup that:
+- The Plandex home directory (`~/.plandex`) exists, is a directory, and is writable.
+- `auth.json` and `accounts.json`, if present, contain valid JSON.
+- `projects-v2.json` and `settings-v2.json`, if present, are structurally valid.
+
+**What you'll see:** If any of these are misconfigured, Plandex prints a grouped error report before running and exits with a non-zero code for fatal errors. Warnings are printed but do not block execution.
+
+Example output for a fatal error:
+```
+── Configuration errors must be fixed before running ──
+
+  ENVIRONMENT
+    ✗  PLANDEX_ENV is set to unrecognised value: "staging"
+       → Set PLANDEX_ENV to 'development', 'production', or leave it unset
+
+  FILESYSTEM
+    ✗  projects-v2.json contains invalid JSON: unexpected end of JSON input
+       → Delete the file and re-authenticate: rm ~/.plandex/projects-v2.json && plandex sign-in
+```
+
+Provider-specific credential checks (API keys, credential files, AWS profiles) are validated after plan settings are loaded but before the first API call — see the [Model Providers](./models/model-providers.md#pre-execution-validation) docs for details.
+
+### Additional Variables Discovered by Error Scan
+
+A scan of the codebase identified the following variables that are used but not currently validated. They do not cause startup failures, but invalid values may produce confusing errors at runtime:
+
+```bash
+SHELL= # Used when executing apply scripts. If empty, falls back to /bin/bash. If that path doesn't exist, script execution fails.
+PLANDEX_COLUMNS= # Sets terminal width for REPL output. Must be a valid integer if set — invalid values are silently ignored.
+PLANDEX_STREAM_FOREGROUND_COLOR= # Sets the ANSI 256 colour code for streamed AI output. Invalid codes are silently ignored.
+PLANDEX_REPL_OUTPUT_FILE= # Path where REPL output is written. Parent directory must exist; otherwise the write fails at runtime.
+```
+
 ### Upgrades
 
 ```bash
