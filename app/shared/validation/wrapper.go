@@ -60,6 +60,33 @@ func SafeValidateStartup(ctx context.Context) error {
 	return ValidateStartup(ctx)
 }
 
+// SafeValidatePreflight performs comprehensive preflight validation if enabled
+// Returns nil if validation is disabled or succeeds
+func SafeValidatePreflight(ctx context.Context) error {
+	if !features.IsValidationEnabled() {
+		// Validation disabled
+		log.Println("Validation system disabled - skipping preflight validation")
+		return nil
+	}
+
+	log.Println("Running preflight validation (validation system enabled)...")
+	log.Println("This comprehensive check validates all systems before work begins...")
+
+	result, err := RunPreflightValidation(ctx)
+
+	// Print summary
+	if result != nil {
+		log.Println(result.Summary())
+
+		// Print detailed report on failure
+		if !result.IsReadyToExecute() {
+			result.PrintDetailedReport(features.IsVerboseValidationEnabled())
+		}
+	}
+
+	return err
+}
+
 // SafeValidateExecution validates execution configuration if enabled
 // Returns nil if validation is disabled or succeeds
 func SafeValidateExecution(ctx context.Context, providers []string) error {
@@ -106,6 +133,8 @@ func GetSafeValidationOptions(phase ValidationPhase) ValidationOptions {
 	switch phase {
 	case PhaseStartup:
 		opts = DefaultStartupOptions()
+	case PhasePreflight:
+		opts = DefaultPreflightOptions()
 	case PhaseExecution:
 		opts = DefaultExecutionOptions()
 	}

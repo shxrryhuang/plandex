@@ -12,6 +12,7 @@ type ValidationPhase string
 
 const (
 	PhaseStartup   ValidationPhase = "startup"   // Synchronous checks at server startup
+	PhasePreflight ValidationPhase = "preflight" // Comprehensive checks before any work begins
 	PhaseExecution ValidationPhase = "execution" // Checks before plan execution
 	PhaseRuntime   ValidationPhase = "runtime"   // Deferred checks during execution
 )
@@ -55,6 +56,20 @@ func DefaultStartupOptions() ValidationOptions {
 		Timeout:         30 * time.Second,
 		SkipProvider:    true, // Defer provider checks to execution time
 		SkipLiteLLM:     false,
+	}
+}
+
+// DefaultPreflightOptions returns default options for preflight validation
+func DefaultPreflightOptions() ValidationOptions {
+	return ValidationOptions{
+		Phase:           PhasePreflight,
+		CheckFileAccess: true, // Comprehensive file checks
+		Verbose:         true,
+		Timeout:         30 * time.Second,
+		SkipDatabase:    false, // Check everything
+		SkipProvider:    false, // Validate all providers
+		SkipEnvironment: false, // Validate environment
+		SkipLiteLLM:     false, // Validate LiteLLM health
 	}
 }
 
@@ -177,6 +192,13 @@ func (v *Validator) ValidateAndExit(ctx context.Context, exitFunc func(int)) {
 // ValidateStartup performs startup validation (database, environment, LiteLLM port)
 func ValidateStartup(ctx context.Context) error {
 	v := NewValidator(DefaultStartupOptions())
+	return v.ValidateAndLog(ctx)
+}
+
+// ValidatePreflight performs comprehensive preflight validation before any work begins
+// This is the most thorough validation - checks database, providers, environment, LiteLLM, and config files
+func ValidatePreflight(ctx context.Context) error {
+	v := NewValidator(DefaultPreflightOptions())
 	return v.ValidateAndLog(ctx)
 }
 

@@ -15,7 +15,7 @@ Configuration errors often only surface deep into execution, after time and reso
 
 ### Validation Phases
 
-The system supports three validation phases:
+The system supports four validation phases:
 
 #### 1. Startup Phase (`PhaseStartup`)
 Runs synchronously at server startup to catch critical issues before services start.
@@ -37,7 +37,43 @@ if err != nil {
 }
 ```
 
-#### 2. Execution Phase (`PhaseExecution`)
+#### 2. Preflight Phase (`PhasePreflight`) **NEW**
+Comprehensive validation that runs before ANY work begins. This is the most thorough validation phase, checking all systems to ensure readiness for execution.
+
+**Validates:**
+- Configuration file format and loading (.env files)
+- Environment variables and conflicts
+- Database connectivity
+- LiteLLM proxy health
+- All AI provider credentials
+- System resources (placeholder for future enhancements)
+
+**Features:**
+- Detailed progress reporting with check-by-check status
+- Critical vs non-critical failure distinction
+- Blocks execution only on critical failures
+- Comprehensive summary report
+
+**Example:**
+```go
+result, err := validation.RunPreflightValidation(context.Background())
+if err != nil {
+    // Critical failure - execution blocked
+    result.PrintDetailedReport(true)
+    log.Fatal("Preflight validation failed: ", err)
+}
+
+log.Println(result.Summary())
+// Proceed with execution
+```
+
+**Quick Preflight Check:**
+```go
+// Faster check with reduced timeout
+result, err := validation.QuickPreflightCheck(context.Background())
+```
+
+#### 3. Execution Phase (`PhaseExecution`)
 Runs before plan execution to validate all required resources are available.
 
 **Validates:**
@@ -58,7 +94,7 @@ if err != nil {
 }
 ```
 
-#### 3. Runtime Phase (`PhaseRuntime`)
+#### 4. Runtime Phase (`PhaseRuntime`)
 Deferred validation when specific features are used.
 
 **Use Cases:**
