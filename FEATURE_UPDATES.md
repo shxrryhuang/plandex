@@ -1,7 +1,7 @@
 # Feature Updates
 
 **Date:** 2026-01-28
-**Status:** Complete — all systems tested, CLI builds cleanly, pipelines verified, upstream merge bugs resolved
+**Status:** Complete — all systems tested, CLI builds cleanly, pipelines verified, upstream merge bugs resolved, preflight validation phase added
 
 ---
 
@@ -14,6 +14,62 @@
 | 3 | Atomic Patch Application | `9f0109a8` | `app/shared/file_transaction.go`, `app/cli/lib/apply.go` |
 | 4 | Startup & Provider Validation | `e588f997` | `app/shared/validation.go`, `app/cli/lib/startup_validation.go` |
 | 5 | Build Bug Fixes (upstream merge) | `6f392fd5` | `app/shared/retry_context.go`, `app/cli/lib/apply.go`, `app/cli/progress/` |
+| 6 | Preflight Validation Phase | `31273bcc` | `app/cli/lib/preflight_validation.go`, `app/shared/validation.go` |
+
+---
+
+## Preflight Validation Phase
+
+### Summary
+
+Added a dedicated execution-readiness gate (Phase 3) that runs after provider validation but before any LLM call, file write, or network request. It collects all execution-readiness failures together so the user fixes everything in one pass — closing every high-priority gap identified by the §12.9 error-message scan.
+
+### Architecture Position
+
+```
+Phase 1 (Startup) → Phase 2 (Provider) → Phase 3 (Preflight) → plan_exec (real work)
+```
+
+`MustRunPreflightChecks()` is wired into `tell.go`, `build.go`, and `continue.go` immediately before the `plan_exec` call.
+
+### Checks
+
+| # | Check | Category | Severity | Resolves scan gap |
+|---|-------|----------|----------|-------------------|
+| 1 | `checkProjectRootWritable` | Filesystem | Fatal | Project root not writable (#10) |
+| 2 | `checkShellAvailable` | Config | Fatal | SHELL empty + /bin/bash missing (#1) |
+| 3 | `checkReplOutputDir` | Filesystem | Warn | REPL output file parent missing (#3) |
+| 4 | `checkAPIHostValid` | Config | Warn | PLANDEX_API_HOST invalid URL (#2) |
+| 5 | `checkProjectsFileValid` | Filesystem | Fatal | projects-v2.json malformed (#4) |
+| 6 | `checkSettingsFileValid` | Filesystem | Fatal | settings-v2.json malformed (#5) |
+
+### Key Design Decisions
+
+- **Zero API calls:** Every check is a local probe (stat, env lookup, JSON parse). Preflight adds no latency.
+- **Distinct error label:** `buildPreflightErrorReport()` tags failures with `PREFLIGHT_VALIDATION` so the error registry distinguishes them from startup-phase failures.
+- **Guard clause:** Early return when `CurrentPlanId == ""` — commands that don't load a plan skip preflight entirely.
+- **Reuses existing pipeline:** `ValidationResult` → `FormatCLI()` → `StoreError()` — no new rendering or persistence code.
+
+### Test Coverage
+
+| Area | Tests | Status |
+|------|-------|--------|
+| Project root (writable / missing / empty / not-dir) | 4 | PASS |
+| Shell availability (set / fallback / both missing) | 3 (1 skip) | PASS |
+| REPL output dir (unset / valid / missing) | 3 | PASS |
+| API host URL (unset / valid / invalid / scheme-only) | 4 | PASS |
+| projects-v2.json (missing / valid / malformed / empty) | 4 | PASS |
+| settings-v2.json (missing / valid / malformed / empty) | 4 | PASS |
+| **Total** | **21 subtests** | **All passing** |
+
+### Build State
+
+| Check | Result |
+|-------|--------|
+| `go build ./...` (shared) | PASS |
+| `go build ./...` (cli) | PASS |
+| `go vet ./...` (cli) | PASS |
+| Preflight unit tests | 21/21 PASS |
 
 ---
 

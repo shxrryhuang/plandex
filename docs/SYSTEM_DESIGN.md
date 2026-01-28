@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
-**Version:** 1.4
-**Last Updated:** January 2026 (Added Progress Reporting, Error Handling & Retry Strategy, Atomic Patch Application; resolved upstream merge build errors in retry_context, apply.go, and progress tests)
+**Version:** 1.5
+**Last Updated:** January 2026 (Added Preflight Validation Phase — execution-readiness gate; resolved all high-priority error-scan gaps)
 
 ---
 
@@ -22,6 +22,7 @@
 13. [Progress Reporting System](#13-progress-reporting-system)
 14. [Error Handling & Retry Strategy](#14-error-handling--retry-strategy)
 15. [Atomic Patch Application](#15-atomic-patch-application)
+16. [Preflight Validation Phase](#16-preflight-validation-phase)
 
 ---
 
@@ -1139,9 +1140,9 @@ app/server/model/
 
 ### 12.1 Overview
 
-Plandex performs two-phase configuration validation before any plan execution begins. This catches common misconfigurations (missing API keys, invalid paths, incompatible provider combinations) early and surfaces clear, actionable error messages — both in CLI output and in the error registry for run journals.
+Plandex performs three-phase configuration validation before any plan execution begins. This catches common misconfigurations (missing API keys, invalid paths, incompatible provider combinations, unwritable project roots) early and surfaces clear, actionable error messages — both in CLI output and in the error registry for run journals. The third phase (Preflight) is documented in detail in [§16](#16-preflight-validation-phase).
 
-### 12.2 Two-Phase Architecture
+### 12.2 Three-Phase Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1176,6 +1177,21 @@ Plandex performs two-phase configuration validation before any plan execution be
 │  │  │  • AWS profile   │  │  • Claude Max    │  │    warning      │    │   │
 │  │  │    reachability  │  │    creds         │  │                 │    │   │
 │  │  └──────────────────┘  └──────────────────┘  └─────────────────┘    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                  Phase 3: Preflight (Execution Readiness)             │   │
+│  │                  preflight_validation.go — MustRunPreflightChecks()   │   │
+│  │                                                                       │   │
+│  │  Runs after provider validation, before any LLM call or file write:  │   │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐    │   │
+│  │  │  Project Root    │  │   Shell &        │  │  Config Files   │    │   │
+│  │  │  • Exists        │  │   Output Dirs    │  │  • projects-v2  │    │   │
+│  │  │  • Is directory  │  │   • SHELL set    │  │  • settings-v2  │    │   │
+│  │  │  • Is writable   │  │   • REPL dir     │  │  • Valid JSON   │    │   │
+│  │  └──────────────────┘  │   • API host URL │  └─────────────────┘    │   │
+│  │                         └──────────────────┘                         │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1249,19 +1265,20 @@ A local mirror (`test/run_validation_tests.sh`) sources the existing `test/test_
 
 ### 12.9 Error Message Scan — Known Gaps
 
-A post-implementation scan of the CLI identified error conditions not yet surfaced by the two-phase validation system. They are grouped below by whether the framework could catch them now or whether runtime context is required.
+A post-implementation scan of the CLI identified error conditions not yet surfaced by the validation system. The five high-priority items and the project-root writability check have since been resolved by the Preflight Validation Phase (§16). Remaining gaps are listed below.
 
-**Catchable at startup (high priority):**
+**Resolved by Preflight Phase (§16):**
 
-| Error condition | Source location | Why it matters |
-|-----------------|-----------------|----------------|
-| `SHELL` env var empty and `/bin/bash` fallback missing | `lib/apply.go:375` | Apply script execution fails silently |
-| `PLANDEX_API_HOST` set to an invalid URL/hostname | `api/clients.go:25` | Cryptic network errors instead of clear config feedback |
-| `PLANDEX_REPL_OUTPUT_FILE` parent directory does not exist | `stream_tui/run.go:102` | `WriteFile` fails at runtime with no pre-check |
-| `projects-v2.json` contains malformed JSON | `fs/projects.go:31`, `lib/current.go:96` | Same pattern as `auth.json` — framework already supports this |
-| `settings-v2.json` contains malformed JSON | `lib/current.go:198` | Bare unmarshal error on exit |
+| Error condition | Preflight check | Severity |
+|-----------------|-----------------|----------|
+| `SHELL` env var empty and `/bin/bash` fallback missing | `checkShellAvailable` | Fatal |
+| `PLANDEX_API_HOST` set to an invalid URL/hostname | `checkAPIHostValid` | Warn |
+| `PLANDEX_REPL_OUTPUT_FILE` parent directory does not exist | `checkReplOutputDir` | Warn |
+| `projects-v2.json` contains malformed JSON | `checkProjectsFileValid` | Fatal |
+| `settings-v2.json` contains malformed JSON | `checkSettingsFileValid` | Fatal |
+| Project root directory is not writable | `checkProjectRootWritable` | Fatal |
 
-**Catchable in deferred validation (medium priority):**
+**Remaining — deferred validation candidates (medium priority):**
 
 | Error condition | Source location | Why it matters |
 |-----------------|-----------------|----------------|
@@ -1274,7 +1291,6 @@ A post-implementation scan of the CLI identified error conditions not yet surfac
 
 | Error condition | Source location | Why deferred |
 |-----------------|-----------------|--------------|
-| Project root directory is not writable | `lib/apply.go:356` | Project root only known after plan resolution |
 | Custom editor command not on PATH | `lib/editor.go:75` | Only known after user selects editor |
 | `less` pager command not available | `term/utils.go:49` | Only needed during output display |
 
@@ -1679,6 +1695,71 @@ app/cli/workspace/
 
 ---
 
+## 16. Preflight Validation Phase
+
+### 16.1 Overview
+
+The Preflight phase is the third and final validation gate before plan execution begins. It sits immediately after the Deferred (provider-scoped) checks and immediately before any LLM call, file write, or network request. Its purpose is to surface all execution-readiness failures together so the user can fix everything in one pass — rather than hitting one cryptic mid-execution error, fixing it, and then hitting the next.
+
+All preflight checks are intentionally cheap: no API calls, no file scanning. They target conditions that the earlier error-message scan (§12.9) flagged as high or medium priority.
+
+### 16.2 Execution Position
+
+```
+main()
+  └─ runStartupChecks()                    ← Phase 1: env / fs / auth
+       cmd.Execute()
+         └─ tell / build / continue
+              ├─ auth.MustResolveAuthWithOrg()
+              ├─ lib.MustResolveProject()
+              ├─ mustSetPlanExecFlags()
+              ├─ lib.MustRunDeferredValidation()   ← Phase 2: provider keys
+              ├─ lib.MustRunPreflightChecks()      ← Phase 3: execution readiness
+              └─ plan_exec.TellPlan / Build        ← real work begins here
+```
+
+`MustRunPreflightChecks` is called identically in `tell.go`, `build.go`, and `continue.go`.
+
+### 16.3 Check Registry
+
+| # | Check function | Category | Severity | What it validates |
+|---|----------------|----------|----------|-------------------|
+| 1 | `checkProjectRootWritable` | Filesystem | Fatal | `fs.ProjectRoot` exists, is a directory, is writable (temp-file probe) |
+| 2 | `checkShellAvailable` | Config | Fatal | `SHELL` env var is set or `/bin/bash` exists as fallback |
+| 3 | `checkReplOutputDir` | Filesystem | Warn | `PLANDEX_REPL_OUTPUT_FILE` parent directory exists if env var is set |
+| 4 | `checkAPIHostValid` | Config | Warn | `PLANDEX_API_HOST` is a valid URL with host component if set |
+| 5 | `checkProjectsFileValid` | Filesystem | Fatal | `projects-v2.json` is valid JSON if present |
+| 6 | `checkSettingsFileValid` | Filesystem | Fatal | `settings-v2.json` is valid JSON if present |
+
+### 16.4 Error Reporting
+
+Preflight failures use a dedicated `buildPreflightErrorReport()` helper that tags errors with the `PREFLIGHT_VALIDATION` label — distinct from `STARTUP_VALIDATION` — so the global error registry can distinguish the two phases. The `FormatCLI()` renderer groups errors by category and renders severity badges identically to the other phases.
+
+### 16.5 Key Files
+
+| File | Role |
+|------|------|
+| `app/cli/lib/preflight_validation.go` | Check registry, `MustRunPreflightChecks()` entry point, `buildPreflightErrorReport()` helper, all 6 check implementations |
+| `app/cli/lib/preflight_validation_test.go` | 21 subtests covering every check and edge case |
+| `app/shared/validation.go:52` | `PhasePreflight` constant |
+| `app/cli/cmd/tell.go:74` | Wire call |
+| `app/cli/cmd/build.go:45` | Wire call |
+| `app/cli/cmd/continue.go:55` | Wire call |
+
+### 16.6 Test Coverage
+
+| Test | Subtests | Status |
+|------|----------|--------|
+| `TestCheckProjectRootWritable` | writable passes / missing fails / empty path fails / file-not-dir fails | PASS |
+| `TestCheckShellAvailable` | SHELL set passes / unset+bash passes / both missing (skip — requires sandbox) | PASS |
+| `TestCheckReplOutputDir` | unset passes / valid parent passes / missing parent fails | PASS |
+| `TestCheckAPIHostValid` | unset passes / valid URL passes / invalid string fails / scheme-only fails | PASS |
+| `TestCheckProjectsFileValid` | missing passes / valid JSON passes / malformed fails / empty warns | PASS |
+| `TestCheckSettingsFileValid` | missing passes / valid JSON passes / malformed fails / empty warns | PASS |
+| **Total** | **21 subtests** | **All passing** |
+
+---
+
 ## Appendix A: File Reference
 
 ```
@@ -1717,6 +1798,8 @@ Key Shared Files:
 
 Key CLI Validation Files:
   /app/cli/lib/startup_validation.go      Startup + provider validation logic
+  /app/cli/lib/preflight_validation.go    Preflight checks + MustRunPreflightChecks() entry point
+  /app/cli/lib/preflight_validation_test.go  21 subtests for all 6 preflight checks
 
 Key Progress Files:
   /app/cli/progress/tracker.go            State coordinator + stall detection
@@ -1753,4 +1836,4 @@ Key Apply Files:
 
 ---
 
-*Document generated: January 2026 · Last updated: January 28, 2026 (v1.4)*
+*Document generated: January 2026 · Last updated: January 28, 2026 (v1.5)*
