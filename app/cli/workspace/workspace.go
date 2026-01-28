@@ -29,7 +29,10 @@ import (
 // Benefits:
 //   - Safety: User's files protected until explicit commit
 //   - Review: Changes can be reviewed before applying
-//   - Rollback: Easy to discard unwanted changes
+//   - Rollback: Transactional rollback via persisted snapshots; apply and
+//     commit both wrap writes in a FileTransaction whose snapshots are
+//     flushed to disk before any write begins, enabling reliable restore
+//     on failure or crash.
 //   - Resume: Workspace state persists across sessions
 //
 // =============================================================================

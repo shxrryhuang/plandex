@@ -3,13 +3,15 @@ package lib
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"plandex-cli/fs"
 	"plandex-cli/term"
 	"plandex-cli/types"
 	"plandex-cli/workspace"
 	"strings"
-	"sync"
+
+	"github.com/fatih/color"
+
+	shared "plandex-shared"
 )
 
 // =============================================================================
@@ -60,7 +62,14 @@ func NewWorkspaceApplyContext(planId, branch, projectId string) (*WorkspaceApply
 	}, nil
 }
 
-// ApplyFilesToWorkspace applies files to the isolated workspace instead of main project
+// ApplyFilesToWorkspace applies files to the isolated workspace atomically.
+//
+// Like ApplyFiles, all operations are staged first (snapshots of the current
+// workspace state captured), then applied one at a time.  If any write fails
+// every previously written file in this batch is restored via its snapshot.
+// The workspace tracking maps are updated only after all writes succeed, so
+// a failure leaves the workspace metadata consistent with what is actually
+// on disk.
 func ApplyFilesToWorkspace(
 	ctx *WorkspaceApplyContext,
 	toApply map[string]string,
@@ -68,14 +77,13 @@ func ApplyFilesToWorkspace(
 	projectPaths *types.ProjectPaths,
 ) ([]string, *types.ApplyRollbackPlan, error) {
 	if ctx == nil || !ctx.Enabled || ctx.Workspace == nil {
-		// Fall back to regular apply
 		return ApplyFiles(toApply, toRemove, projectPaths)
 	}
 
 	ws := ctx.Workspace
 	opLog := ctx.OperationLog
 
-	// Start recovery point
+	// --- Recovery marker -----------------------------------------------------
 	var filesToApply []string
 	for path := range toApply {
 		if path != "_apply.sh" {
@@ -85,163 +93,197 @@ func ApplyFilesToWorkspace(
 	for path := range toRemove {
 		filesToApply = append(filesToApply, path)
 	}
-
 	if err := workspace.StartRecoveryPoint(ws, "apply", filesToApply); err != nil {
-		// Log but don't fail
 		fmt.Printf("Warning: failed to start recovery point: %v\n", err)
 	}
 
-	var updatedFiles []string
-	toRevert := map[string]types.ApplyReversion{}
-	var toRemoveOnRollback []string
+	// --- Staging: build operation list and capture snapshots -----------------
+	// We use the workspace's files directory as the transaction base so
+	// snapshots capture what is currently in the workspace (not the original
+	// project).
+	tx := shared.NewFileTransaction("ws-apply", ws.Branch, ws.GetFilesDir())
+	if err := tx.Begin(); err != nil {
+		workspace.EndRecoveryPoint(ws)
+		return nil, nil, fmt.Errorf("failed to begin workspace transaction: %w", err)
+	}
 
-	var mu sync.Mutex
-	totalOps := len(toApply) + len(toRemove)
-	errCh := make(chan error, totalOps)
+	normalise := func(s string) string {
+		return strings.ReplaceAll(s, "\\`\\`\\`", "```")
+	}
+
+	// pendingTracking collects metadata updates to apply only after all writes
+	// succeed.  This keeps workspace tracking consistent on failure.
+	type trackEntry struct {
+		path         string
+		opType       string // "modify" | "create" | "delete"
+		originalHash string
+		contentHash  string
+		mode         os.FileMode
+		size         int64
+	}
+	var pendingTracking []trackEntry
+	var updatedPaths []string
 
 	for path, content := range toApply {
 		if path == "_apply.sh" {
-			errCh <- nil
+			continue
+		}
+		content = normalise(content)
+		opLog.LogStart("apply_file", path)
+
+		wsPath := ws.GetFilePath(path)
+		originalPath := ws.GetOriginalPath(path)
+
+		// Determine whether this is a create or modify relative to the
+		// original project, and whether the content actually differs from
+		// what is already in the workspace.
+		var originalExists bool
+		var originalMode os.FileMode
+		var originalContent []byte
+		if info, err := os.Stat(originalPath); err == nil {
+			originalExists = true
+			originalMode = info.Mode()
+			originalContent, _ = os.ReadFile(originalPath)
+		}
+
+		// If workspace already has this file with identical content, skip.
+		if wsContent, err := os.ReadFile(wsPath); err == nil {
+			if string(wsContent) == content {
+				opLog.LogComplete("apply_file", path, workspace.HashString(content))
+				continue
+			}
+		} else if originalExists && string(originalContent) == content {
+			// Not in workspace yet and identical to original — skip.
+			opLog.LogComplete("apply_file", path, workspace.HashString(content))
 			continue
 		}
 
-		go func(path, content string) {
-			// Log operation start
-			opLog.LogStart("apply_file", path)
-
-			// Compute paths
-			wsPath := ws.GetFilePath(path)
-			originalPath := ws.GetOriginalPath(path)
-			content = strings.ReplaceAll(content, "\\`\\`\\`", "```")
-
-			// Check if file exists in original project
-			var originalExists bool
-			var originalMode os.FileMode
-			var originalContent []byte
-
-			info, err := os.Stat(originalPath)
-			if err == nil {
-				originalExists = true
-				originalMode = info.Mode()
-				originalContent, _ = os.ReadFile(originalPath)
-			} else if !os.IsNotExist(err) {
-				errCh <- fmt.Errorf("failed to check if %s exists: %w", originalPath, err)
-				return
+		// Stage the operation (snapshot of current workspace file captured).
+		if originalExists {
+			if err := tx.ModifyFile(path, content); err != nil {
+				tx.Rollback("staging failed")
+				workspace.EndRecoveryPoint(ws)
+				return nil, nil, fmt.Errorf("failed to stage workspace modification for %s: %w", path, err)
 			}
-
-			// Check if file is already in workspace
-			wsInfo, wsErr := os.Stat(wsPath)
-			if wsErr == nil {
-				// File already in workspace - read current content for rollback
-				if wsContent, readErr := os.ReadFile(wsPath); readErr == nil {
-					mu.Lock()
-					toRevert[wsPath] = types.ApplyReversion{Content: string(wsContent), Mode: wsInfo.Mode()}
-					mu.Unlock()
-				}
+			pendingTracking = append(pendingTracking, trackEntry{
+				path: path, opType: "modify",
+				originalHash: workspace.HashString(string(originalContent)),
+				contentHash:  workspace.HashString(content),
+				mode:         originalMode, size: int64(len(content)),
+			})
+		} else {
+			if err := tx.CreateFile(path, content); err != nil {
+				tx.Rollback("staging failed")
+				workspace.EndRecoveryPoint(ws)
+				return nil, nil, fmt.Errorf("failed to stage workspace creation for %s: %w", path, err)
 			}
-
-			// Ensure workspace directory exists
-			if err := os.MkdirAll(filepath.Dir(wsPath), 0755); err != nil {
-				errCh <- fmt.Errorf("failed to create workspace directory: %w", err)
-				return
-			}
-
-			// Check if content actually changed
-			if originalExists && string(originalContent) == content && wsErr != nil {
-				// No change from original and not already in workspace
-				errCh <- nil
-				return
-			}
-
-			// Write to workspace
-			if err := os.WriteFile(wsPath, []byte(content), 0644); err != nil {
-				opLog.LogFailed("apply_file", path, err)
-				errCh <- fmt.Errorf("failed to write to workspace: %w", err)
-				return
-			}
-
-			// Track in workspace metadata
-			contentHash := workspace.HashString(content)
-			if originalExists {
-				originalHash := workspace.HashString(string(originalContent))
-				ws.TrackModifiedFile(path, originalHash, contentHash, originalMode, int64(len(content)))
-			} else {
-				ws.TrackCreatedFile(path, contentHash, 0644, int64(len(content)))
-				mu.Lock()
-				toRemoveOnRollback = append(toRemoveOnRollback, wsPath)
-				mu.Unlock()
-			}
-
-			mu.Lock()
-			updatedFiles = append(updatedFiles, path)
-			mu.Unlock()
-
-			opLog.LogComplete("apply_file", path, contentHash)
-			errCh <- nil
-		}(path, content)
+			pendingTracking = append(pendingTracking, trackEntry{
+				path: path, opType: "create",
+				contentHash: workspace.HashString(content),
+				mode:        0644, size: int64(len(content)),
+			})
+		}
+		updatedPaths = append(updatedPaths, path)
 	}
 
-	// Handle file removals
 	for path, remove := range toRemove {
-		go func(path string, remove bool) {
-			if !remove {
-				errCh <- nil
-				return
-			}
-
-			opLog.LogStart("remove_file", path)
-
-			// Track deletion in workspace
-			ws.TrackDeletedFile(path)
-
-			// If file was in workspace, remove it
-			wsPath := ws.GetFilePath(path)
-			if info, err := os.Stat(wsPath); err == nil {
-				// Read content for rollback before removing
-				if content, readErr := os.ReadFile(wsPath); readErr == nil {
-					mu.Lock()
-					toRevert[wsPath] = types.ApplyReversion{Content: string(content), Mode: info.Mode()}
-					mu.Unlock()
-				}
-
-				if err := os.Remove(wsPath); err != nil && !os.IsNotExist(err) {
-					errCh <- fmt.Errorf("failed to remove file from workspace: %w", err)
-					return
-				}
-			}
-
-			opLog.LogComplete("remove_file", path, "")
-			errCh <- nil
-		}(path, remove)
+		if !remove {
+			continue
+		}
+		opLog.LogStart("remove_file", path)
+		if err := tx.DeleteFile(path); err != nil {
+			tx.Rollback("staging failed")
+			workspace.EndRecoveryPoint(ws)
+			return nil, nil, fmt.Errorf("failed to stage workspace deletion for %s: %w", path, err)
+		}
+		pendingTracking = append(pendingTracking, trackEntry{path: path, opType: "delete"})
+		updatedPaths = append(updatedPaths, path)
 	}
 
-	// Wait for all operations
-	for i := 0; i < totalOps; i++ {
-		if err := <-errCh; err != nil {
+	if len(tx.Operations) == 0 {
+		tx.Commit()
+		workspace.EndRecoveryPoint(ws)
+		return updatedPaths, &types.ApplyRollbackPlan{
+			PreviousProjectPaths: projectPaths,
+			ToRevert:             map[string]types.ApplyReversion{},
+		}, nil
+	}
+
+	// --- Applying: sequential writes to workspace directory ------------------
+	for {
+		op, err := tx.ApplyNext()
+		if op == nil {
+			break
+		}
+		if err != nil {
+			opLog.LogFailed("apply_file", op.Path, err)
+			tx.Rollback(fmt.Sprintf("workspace write failed for %s: %v", op.Path, err))
 			workspace.EndRecoveryPoint(ws)
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("workspace apply failed for %s: %w (all changes rolled back)", op.Path, err)
 		}
 	}
 
-	// Save workspace state
+	// --- Commit: all writes succeeded, update tracking atomically -----------
+	if err := tx.Commit(); err != nil {
+		tx.Rollback("commit validation failed")
+		workspace.EndRecoveryPoint(ws)
+		return nil, nil, fmt.Errorf("workspace transaction commit failed: %w", err)
+	}
+
+	// Now that all writes are durable, update workspace metadata.
+	for _, t := range pendingTracking {
+		switch t.opType {
+		case "modify":
+			ws.TrackModifiedFile(t.path, t.originalHash, t.contentHash, t.mode, t.size)
+		case "create":
+			ws.TrackCreatedFile(t.path, t.contentHash, t.mode, t.size)
+		case "delete":
+			ws.TrackDeletedFile(t.path)
+		}
+		opLog.LogComplete("apply_file", t.path, t.contentHash)
+	}
+
 	if err := ws.Save(); err != nil {
 		return nil, nil, fmt.Errorf("failed to save workspace state: %w", err)
 	}
-
-	// End recovery point
 	workspace.EndRecoveryPoint(ws)
 
-	return updatedFiles, &types.ApplyRollbackPlan{
+	// Build rollback plan from transaction snapshots for post-exec-script use.
+	toRevert := map[string]types.ApplyReversion{}
+	var toRemoveOnRollback []string
+	for _, snap := range tx.Snapshots {
+		if snap.Existed {
+			toRevert[snap.Path] = types.ApplyReversion{Content: snap.Content, Mode: snap.Mode}
+		} else {
+			toRemoveOnRollback = append(toRemoveOnRollback, snap.Path)
+		}
+	}
+
+	return updatedPaths, &types.ApplyRollbackPlan{
 		PreviousProjectPaths: projectPaths,
 		ToRevert:             toRevert,
 		ToRemove:             toRemoveOnRollback,
 	}, nil
 }
 
-// RollbackWorkspace rolls back changes in the workspace
+// RollbackWorkspace reverts workspace files using the rollback plan produced
+// by ApplyFilesToWorkspace.  Each entry in the plan corresponds to exactly
+// one file that was written during the apply: ToRevert holds the pre-apply
+// content for files that existed before, and ToRemove holds paths for files
+// that were newly created.
+//
+// Workspace tracking is updated surgically — only the entries that were
+// touched by this apply are removed.  Any earlier workspace modifications
+// that were not part of this rollback plan remain intact.
+//
+// Output follows the same three-phase pattern as Rollback():
+//
+//	🔄 Rolling back workspace changes…
+//	  ↩ restored  path/to/file.go
+//	  ↩ removed   path/to/new.go
+//	🚫 Rolled back N file(s)
 func RollbackWorkspace(ctx *WorkspaceApplyContext, rollbackPlan *types.ApplyRollbackPlan, verbose bool) {
 	if ctx == nil || !ctx.Enabled || ctx.Workspace == nil {
-		// Fall back to regular rollback
 		Rollback(rollbackPlan, verbose)
 		return
 	}
@@ -251,41 +293,84 @@ func RollbackWorkspace(ctx *WorkspaceApplyContext, rollbackPlan *types.ApplyRoll
 	}
 
 	if verbose {
-		fmt.Println("🔄 Rolling back workspace changes...")
+		fmt.Println()
+		color.New(term.ColorHiYellow, color.Bold).Println("🔄 Rolling back workspace changes…")
 	}
 
-	var wg sync.WaitGroup
-
-	// Revert modified files
-	for path, revert := range rollbackPlan.ToRevert {
-		wg.Add(1)
-		go func(path string, revert types.ApplyReversion) {
-			defer wg.Done()
-			os.WriteFile(path, []byte(revert.Content), revert.Mode)
-		}(path, revert)
-	}
-
-	// Remove created files
-	for _, path := range rollbackPlan.ToRemove {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-			os.Remove(path)
-		}(path)
-	}
-
-	wg.Wait()
-
-	// Update workspace tracking
 	ws := ctx.Workspace
-	ws.ModifiedFiles = make(map[string]*workspace.FileEntry)
-	ws.CreatedFiles = make(map[string]*workspace.FileEntry)
-	ws.DeletedFiles = make(map[string]bool)
+	var errs []error
+	restored := 0
+
+	// 1. Restore files that existed before this apply (content revert).
+	for path, revert := range rollbackPlan.ToRevert {
+		if err := os.WriteFile(path, []byte(revert.Content), revert.Mode); err != nil {
+			errs = append(errs, fmt.Errorf("failed to restore %s: %w", path, err))
+			if verbose {
+				color.New(term.ColorHiRed).Printf("  ✗ restore  %s  (%v)\n", path, err)
+			}
+			continue
+		}
+		restored++
+		if verbose {
+			color.New(term.ColorHiGreen).Printf("  ↩ restored  %s\n", path)
+		}
+		// Remove only this path from tracking — leave unrelated entries alone.
+		relPath := workspaceRelPath(ws, path)
+		if relPath != "" {
+			ws.ModifiedFiles = deleteKey(ws.ModifiedFiles, relPath)
+			ws.CreatedFiles = deleteKey(ws.CreatedFiles, relPath)
+		}
+	}
+
+	// 2. Delete files that were newly created by this apply.
+	for _, path := range rollbackPlan.ToRemove {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("failed to remove %s: %w", path, err))
+			if verbose {
+				color.New(term.ColorHiRed).Printf("  ✗ remove   %s  (%v)\n", path, err)
+			}
+			continue
+		}
+		restored++
+		if verbose {
+			color.New(term.ColorHiGreen).Printf("  ↩ removed   %s\n", path)
+		}
+		relPath := workspaceRelPath(ws, path)
+		if relPath != "" {
+			ws.CreatedFiles = deleteKey(ws.CreatedFiles, relPath)
+			ws.ModifiedFiles = deleteKey(ws.ModifiedFiles, relPath)
+		}
+	}
+
 	ws.Save()
 
 	if verbose {
-		fmt.Println("✅ Workspace rolled back")
+		if len(errs) > 0 {
+			color.New(term.ColorHiRed, color.Bold).Printf("⚠ Workspace rollback completed with %d error(s), %d file(s) restored\n", len(errs), restored)
+		} else {
+			color.New(term.ColorHiGreen, color.Bold).Printf("🚫 Rolled back %d workspace file(s)\n", restored)
+		}
+		fmt.Println()
 	}
+}
+
+// workspaceRelPath converts an absolute workspace file path back to the
+// relative path used as the key in the workspace tracking maps.
+func workspaceRelPath(ws *workspace.Workspace, absPath string) string {
+	filesDir := ws.GetFilesDir()
+	if len(absPath) > len(filesDir)+1 && absPath[:len(filesDir)] == filesDir {
+		return absPath[len(filesDir)+1:]
+	}
+	return ""
+}
+
+// deleteKey removes a single key from a FileEntry map without replacing the
+// entire map.  Returns the same map for assignment convenience.
+func deleteKey(m map[string]*workspace.FileEntry, key string) map[string]*workspace.FileEntry {
+	if m != nil {
+		delete(m, key)
+	}
+	return m
 }
 
 // GetWorkspaceExecutionDir returns the directory to use for command execution

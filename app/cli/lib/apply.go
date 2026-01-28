@@ -154,9 +154,8 @@ func MustApplyPlanAttempt(
 
 	onErr := func(errMsg string, errArgs ...interface{}) {
 		term.StopSpinner()
-		// if toRollback != nil && toRollback.HasChanges() {
-		// 	Rollback(toRollback, true)
-		// }
+		// ApplyFiles now rolls back internally on failure via FileTransaction;
+		// no manual rollback is needed here.
 		term.OutputErrorAndExit(errMsg, errArgs...)
 	}
 
@@ -192,17 +191,26 @@ func MustApplyPlanAttempt(
 
 		log.Println("Applying plan files")
 
+		term.StopSpinner()
 		if hasExec {
-			term.StopSpinner()
-			fmt.Println("🔄 Tentatively applying changes")
-			term.ResumeSpinner()
+			color.New(term.ColorHiCyan).Println("📋 Staging changes (capturing snapshots)…")
+		} else {
+			color.New(term.ColorHiCyan).Println("📋 Applying changes atomically…")
 		}
+		term.ResumeSpinner()
 
 		updatedFiles, toRollback, err = ApplyFiles(toApply, toRemove, paths)
 
 		if err != nil {
+			// ApplyFiles rolled back internally; surface the error.
 			onErr("failed to apply files: %s", err)
 		}
+
+		term.StopSpinner()
+		if hasExec {
+			color.New(term.ColorHiCyan).Println("✔ Changes staged (all-or-nothing applied to disk)")
+		}
+		term.ResumeSpinner()
 
 		log.Println("Applying plan files complete")
 	}
@@ -305,7 +313,9 @@ func handleApplyScript(
 			}
 
 			if res == string(types.ApplyRollbackOptionRollback) {
-				Rollback(toRollback, true)
+				if rbErr := Rollback(toRollback, true); rbErr != nil {
+					onErr("rollback failed: %s", rbErr)
+				}
 				os.Exit(0)
 			} else {
 				onSuccess()
@@ -531,6 +541,7 @@ func execApplyScript(
 	if interrupted.Load() {
 		os.Remove(scriptPath)
 
+		fmt.Println()
 		color.New(term.ColorHiYellow, color.Bold).Println("👉 Execution interrupted")
 
 		didSucceed, canceled, err := term.ConfirmYesNoCancel("Did the commands succeed?")
@@ -542,8 +553,9 @@ func execApplyScript(
 		success = didSucceed
 
 		if canceled {
-			// rollback and exit
-			Rollback(toRollback, true)
+			if rbErr := Rollback(toRollback, true); rbErr != nil {
+				onErr("rollback after interrupt failed: %s", rbErr)
+			}
 			os.Exit(0)
 		}
 	}
@@ -619,202 +631,315 @@ func commitApplied(autoCommit bool, commitSummary string, updatedFiles []string,
 	return nil
 }
 
+// ApplyFiles applies file changes atomically via FileTransaction.
+//
+// All operations are staged first (snapshots captured), then applied
+// sequentially.  If any single write fails the entire set is rolled back
+// to the pre-apply state via the captured snapshots.  A PatchStatusReporter
+// (if non-nil on the global ActiveReporter) receives lifecycle events so
+// the CLI can display staging / applying / rolled-back status per file.
+//
+// The returned ApplyRollbackPlan is populated from the transaction's own
+// snapshot data so that callers who need a manual rollback (e.g. after an
+// exec-script failure) can still invoke Rollback() without re-reading disk.
 func ApplyFiles(toApply map[string]string, toRemove map[string]bool, projectPaths *types.ProjectPaths) ([]string, *types.ApplyRollbackPlan, error) {
-	var updatedFiles []string
-	toRevert := map[string]types.ApplyReversion{}
-	var toRemoveOnRollback []string
+	reporter := shared.NewLoggingReporter()
 
-	var mu sync.Mutex
-	totalOps := len(toApply) + len(toRemove)
-	errCh := make(chan error, totalOps)
+	// --- Phase: preparing ----------------------------------------------------
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      "",
+		Phase:     shared.PhasePreparing,
+		FileCount: len(toApply) + len(toRemove),
+		Timestamp: time.Now(),
+	})
+
+	tx := shared.NewFileTransaction("apply", "main", fs.ProjectRoot)
+	if err := tx.Begin(); err != nil {
+		return nil, nil, fmt.Errorf("failed to begin apply transaction: %w", err)
+	}
+
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PhaseStaging,
+		FileCount: len(toApply) + len(toRemove),
+		Timestamp: time.Now(),
+	})
+
+	// --- Phase: staging (capture snapshots, enqueue ops) ---------------------
+	// Normalise escape sequences used by the plan renderer.
+	normalise := func(s string) string {
+		return strings.ReplaceAll(s, "\\`\\`\\`", "```")
+	}
+
+	// Track which relative paths actually have content changes so we can
+	// skip unchanged files without erroring.
+	var updatedPaths []string
 
 	for path, content := range toApply {
 		if path == "_apply.sh" {
-			errCh <- nil
 			continue
 		}
-		go func(path, content string) {
-			// Compute destination path
-			dstPath := filepath.Join(fs.ProjectRoot, path)
-			content = strings.ReplaceAll(content, "\\`\\`\\`", "```")
-			// Check if the file exists
-			var exists bool
-			var mode os.FileMode
-			info, err := os.Stat(dstPath)
-			if err == nil {
-				exists = true
-				mode = info.Mode()
-			} else {
-				if os.IsNotExist(err) {
-					exists = false
-				} else {
-					errCh <- fmt.Errorf("failed to check if %s exists: %s", dstPath, err.Error())
-					return
-				}
-			}
+		content = normalise(content)
+		dstPath := filepath.Join(fs.ProjectRoot, path)
 
-			if exists {
-				// read file content
-				bytes, err := os.ReadFile(dstPath)
-				if err != nil {
-					errCh <- fmt.Errorf("failed to read %s: %s", dstPath, err.Error())
-					return
-				}
-				// Check if the file has changed
-				if string(bytes) == content {
-					// log.Println("File is unchanged, skipping")
-					errCh <- nil
-					return
-				} else {
-					mu.Lock()
-					updatedFiles = append(updatedFiles, path)
-					toRevert[dstPath] = types.ApplyReversion{Content: string(bytes), Mode: mode}
-					mu.Unlock()
-				}
-			} else {
-				mu.Lock()
-				updatedFiles = append(updatedFiles, path)
-				toRemoveOnRollback = append(toRemoveOnRollback, dstPath)
-				mu.Unlock()
-				// Create the directory if it doesn't exist
-				err := os.MkdirAll(filepath.Dir(dstPath), 0755)
-				if err != nil {
-					errCh <- fmt.Errorf("failed to create directory %s: %s", filepath.Dir(dstPath), err.Error())
-					return
-				}
+		// Check whether content actually differs from what's on disk.
+		if existing, err := os.ReadFile(dstPath); err == nil {
+			if string(existing) == content {
+				reporter.OnFileStatus(shared.FileStatus{
+					Path:      path,
+					Phase:     shared.PhaseStaging,
+					OpType:    "skip",
+					Timestamp: time.Now(),
+				})
+				continue // unchanged – skip entirely
 			}
-			// Write the file
-			err = os.WriteFile(dstPath, []byte(content), 0644)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to write %s: %s", dstPath, err.Error())
-				return
+			// File exists and differs → modify
+			reporter.OnFileStatus(shared.FileStatus{
+				Path:      path,
+				Phase:     shared.PhaseStaging,
+				OpType:    "modify",
+				Timestamp: time.Now(),
+			})
+			if err := tx.ModifyFile(path, content); err != nil {
+				tx.Rollback("staging failed")
+				return nil, nil, fmt.Errorf("failed to stage modification for %s: %w", path, err)
 			}
-			errCh <- nil
-		}(path, content)
+		} else {
+			// File does not exist → create
+			reporter.OnFileStatus(shared.FileStatus{
+				Path:      path,
+				Phase:     shared.PhaseStaging,
+				OpType:    "create",
+				Timestamp: time.Now(),
+			})
+			if err := tx.CreateFile(path, content); err != nil {
+				tx.Rollback("staging failed")
+				return nil, nil, fmt.Errorf("failed to stage creation for %s: %w", path, err)
+			}
+		}
+		updatedPaths = append(updatedPaths, path)
 	}
 
 	for path, remove := range toRemove {
-		go func(path string, remove bool) {
-			if !remove {
-				errCh <- nil
-				return
-			}
-			// Compute destination path
-			dstPath := filepath.Join(fs.ProjectRoot, path)
-			// Check if the file exists
-			var exists bool
-			var mode os.FileMode
-			info, err := os.Stat(dstPath)
-			if err == nil {
-				exists = true
-				mode = info.Mode()
-			} else {
-				if os.IsNotExist(err) {
-					exists = false
-				} else {
-					errCh <- fmt.Errorf("failed to check if %s exists: %s", dstPath, err.Error())
-					return
-				}
-			}
-			if exists {
-				content, err := os.ReadFile(dstPath)
-				if err != nil {
-					errCh <- fmt.Errorf("failed to read %s: %s", dstPath, err.Error())
-					return
-				}
-				err = os.Remove(dstPath)
-				if err != nil && !os.IsNotExist(err) {
-					errCh <- fmt.Errorf("failed to remove %s: %s", dstPath, err.Error())
-					return
-				}
-				mu.Lock()
-				toRevert[dstPath] = types.ApplyReversion{Content: string(content), Mode: mode}
-				mu.Unlock()
-			}
-			errCh <- nil
-		}(path, remove)
+		if !remove {
+			continue
+		}
+		reporter.OnFileStatus(shared.FileStatus{
+			Path:      path,
+			Phase:     shared.PhaseStaging,
+			OpType:    "delete",
+			Timestamp: time.Now(),
+		})
+		if err := tx.DeleteFile(path); err != nil {
+			tx.Rollback("staging failed")
+			return nil, nil, fmt.Errorf("failed to stage deletion for %s: %w", path, err)
+		}
+		updatedPaths = append(updatedPaths, path)
 	}
 
-	for i := 0; i < totalOps; i++ {
-		err := <-errCh
+	if len(tx.Operations) == 0 {
+		// Nothing to do – commit the empty transaction cleanly.
+		tx.Commit()
+		reporter.OnPatchEvent(shared.PatchEvent{
+			TxId:      tx.Id,
+			Phase:     shared.PhaseDone,
+			Timestamp: time.Now(),
+		})
+		return updatedPaths, &types.ApplyRollbackPlan{
+			PreviousProjectPaths: projectPaths,
+			ToRevert:             map[string]types.ApplyReversion{},
+		}, nil
+	}
+
+	// --- Phase: applying (write files sequentially via transaction) ----------
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PhaseApplying,
+		FileCount: len(tx.Operations),
+		Timestamp: time.Now(),
+	})
+
+	for {
+		op, err := tx.ApplyNext()
+		if op == nil {
+			break // no more pending operations
+		}
+
+		reporter.OnFileStatus(shared.FileStatus{
+			Path:      op.Path,
+			Phase:     shared.PhaseApplying,
+			OpType:    string(op.Type),
+			Timestamp: time.Now(),
+		})
+
 		if err != nil {
-			return nil, nil, err
+			// A single file failed – rollback the entire transaction.
+			reporter.OnFileStatus(shared.FileStatus{
+				Path:      op.Path,
+				Phase:     shared.PhaseDone,
+				OpType:    string(op.Type),
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
+			reporter.OnPatchEvent(shared.PatchEvent{
+				TxId:      tx.Id,
+				Phase:     shared.PhaseRollingBack,
+				Reason:    fmt.Sprintf("write failed for %s: %v", op.Path, err),
+				Timestamp: time.Now(),
+			})
+
+			rbErr := tx.Rollback(fmt.Sprintf("apply failed: %v", err))
+			if rbErr != nil {
+				return nil, nil, fmt.Errorf("apply failed for %s (%v) and rollback also failed: %w", op.Path, err, rbErr)
+			}
+
+			reporter.OnPatchEvent(shared.PatchEvent{
+				TxId:      tx.Id,
+				Phase:     shared.PhaseDone,
+				Reason:    "rolled back",
+				Timestamp: time.Now(),
+			})
+			return nil, nil, fmt.Errorf("apply failed for %s: %w (all changes rolled back)", op.Path, err)
 		}
 	}
 
-	return updatedFiles, &types.ApplyRollbackPlan{
+	// --- Phase: committing ---------------------------------------------------
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PhaseCommitting,
+		FileCount: len(tx.Operations),
+		Timestamp: time.Now(),
+	})
+
+	if err := tx.Commit(); err != nil {
+		// Commit guards against pending ops; should not happen here, but
+		// roll back defensively.
+		tx.Rollback("commit validation failed")
+		return nil, nil, fmt.Errorf("transaction commit failed: %w", err)
+	}
+
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PhaseDone,
+		FileCount: len(updatedPaths),
+		Timestamp: time.Now(),
+	})
+
+	// Build rollback plan from snapshots so callers can still revert manually
+	// (e.g. after an exec-script failure that happens post-apply).
+	toRevert := map[string]types.ApplyReversion{}
+	var toRemoveOnRollback []string
+	for _, snap := range tx.Snapshots {
+		if snap.Existed {
+			toRevert[snap.Path] = types.ApplyReversion{Content: snap.Content, Mode: snap.Mode}
+		} else {
+			toRemoveOnRollback = append(toRemoveOnRollback, snap.Path)
+		}
+	}
+
+	return updatedPaths, &types.ApplyRollbackPlan{
 		PreviousProjectPaths: projectPaths,
 		ToRevert:             toRevert,
 		ToRemove:             toRemoveOnRollback,
 	}, nil
 }
 
+// Rollback restores every file in rollbackPlan to its pre-apply state.
+//
+// Operations are performed sequentially in reverse snapshot order so that
+// each restore is confirmed before the next begins.  If any single restore
+// fails the function continues with the remaining files and collects all
+// errors into the returned value — the caller can surface them, but we
+// never stop mid-rollback because a partially-restored project is worse
+// than a partially-failed rollback.
+//
+// When msg is true the function prints a per-phase status line:
+//
+//	🔄 Rolling back changes…
+//	  ↩ restored  src/foo.go
+//	  ✗ removed   src/bar.go  (failed: …)
+//	🚫 Rolled back N file(s)
 func Rollback(rollbackPlan *types.ApplyRollbackPlan, msg bool) error {
-	numRoutines := len(rollbackPlan.ToRevert) + len(rollbackPlan.ToRemove) + 1
-	errCh := make(chan error, numRoutines)
-	for path, revert := range rollbackPlan.ToRevert {
-		go func(path string, revert types.ApplyReversion) {
-			err := os.WriteFile(path, []byte(revert.Content), revert.Mode)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to write %s: %s", path, err.Error())
-				return
-			}
-			errCh <- nil
-		}(path, revert)
+	if rollbackPlan == nil || !rollbackPlan.HasChanges() {
+		return nil
 	}
 
-	for _, path := range rollbackPlan.ToRemove {
-		go func(path string) {
-			err := os.Remove(path)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to remove %s: %s", path, err.Error())
-				return
-			}
-			errCh <- nil
-		}(path)
-	}
-
-	go func() {
-		var err error
-		updatedProjectPaths, err := fs.GetProjectPaths(fs.ProjectRoot)
-		if err != nil {
-			errCh <- fmt.Errorf("failed to get project paths: %v", err)
-		}
-		var toRemove []string
-		for path := range updatedProjectPaths.AllPaths {
-			if _, ok := rollbackPlan.PreviousProjectPaths.AllPaths[path]; !ok {
-				toRemove = append(toRemove, path)
-			}
-		}
-		pathsErrCh := make(chan error, len(toRemove))
-		for _, path := range toRemove {
-			go func(path string) {
-				err := os.Remove(path)
-				pathsErrCh <- err
-			}(path)
-		}
-		for range toRemove {
-			err := <-pathsErrCh
-			if err != nil {
-				errCh <- fmt.Errorf("failed to remove %s: %s", toRemove, err.Error())
-				return
-			}
-		}
-		errCh <- nil
-	}()
-
-	errs := []error{}
-	for i := 0; i < numRoutines; i++ {
-		err := <-errCh
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to rollback: %s", errs)
-	}
 	if msg {
-		fmt.Println("🚫 Rolled back all changes")
+		fmt.Println()
+		color.New(term.ColorHiYellow, color.Bold).Println("🔄 Rolling back changes…")
+	}
+
+	var errs []error
+	restored := 0
+
+	// 1. Restore files that existed before the apply (content revert).
+	for path, revert := range rollbackPlan.ToRevert {
+		if err := os.WriteFile(path, []byte(revert.Content), revert.Mode); err != nil {
+			errs = append(errs, fmt.Errorf("failed to restore %s: %w", path, err))
+			if msg {
+				color.New(term.ColorHiRed).Printf("  ✗ restore  %s  (%v)\n", path, err)
+			}
+			continue
+		}
+		restored++
+		if msg {
+			color.New(term.ColorHiGreen).Printf("  ↩ restored  %s\n", path)
+		}
+	}
+
+	// 2. Remove files that were newly created by the apply.
+	for _, path := range rollbackPlan.ToRemove {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("failed to remove %s: %w", path, err))
+			if msg {
+				color.New(term.ColorHiRed).Printf("  ✗ remove   %s  (%v)\n", path, err)
+			}
+			continue
+		}
+		restored++
+		if msg {
+			color.New(term.ColorHiGreen).Printf("  ↩ removed   %s\n", path)
+		}
+	}
+
+	// 3. Sweep any files that appeared in the project after the apply but
+	//    were not part of the explicit apply set (e.g. side-effect files
+	//    created by a plan renderer).  Only run when PreviousProjectPaths is
+	//    available.
+	if rollbackPlan.PreviousProjectPaths != nil {
+		updatedPaths, pathErr := fs.GetProjectPaths(fs.ProjectRoot)
+		if pathErr != nil {
+			errs = append(errs, fmt.Errorf("failed to scan project paths for sweep: %w", pathErr))
+		} else {
+			for path := range updatedPaths.AllPaths {
+				if _, existed := rollbackPlan.PreviousProjectPaths.AllPaths[path]; !existed {
+					if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+						errs = append(errs, fmt.Errorf("failed to sweep %s: %w", path, rmErr))
+						if msg {
+							color.New(term.ColorHiRed).Printf("  ✗ sweep    %s  (%v)\n", path, rmErr)
+						}
+						continue
+					}
+					restored++
+					if msg {
+						color.New(term.ColorHiGreen).Printf("  ↩ swept    %s\n", path)
+					}
+				}
+			}
+		}
+	}
+
+	if msg {
+		if len(errs) > 0 {
+			color.New(term.ColorHiRed, color.Bold).Printf("⚠ Rollback completed with %d error(s), %d file(s) restored\n", len(errs), restored)
+		} else {
+			color.New(term.ColorHiGreen, color.Bold).Printf("🚫 Rolled back %d file(s)\n", restored)
+		}
+		fmt.Println()
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("rollback completed with errors: %v", errs)
 	}
 	return nil
 }

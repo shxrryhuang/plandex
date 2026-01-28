@@ -332,7 +332,8 @@ func buildRecoveryFromFailure(failure *ProviderFailure) *RecoveryAction {
 		recovery.RollbackRequired = true
 		recovery.RollbackTarget = "last_checkpoint"
 		recovery.AutoRecoveryAction = fmt.Sprintf(
-			"Will retry with %s backoff (max %d attempts)",
+			"Will retry with %s backoff (max %d attempts). "+
+				"Transaction rolled back sequentially using persisted snapshots.",
 			formatBackoff(strategy),
 			strategy.MaxAttempts,
 		)
@@ -540,6 +541,8 @@ func (r *ErrorReport) Format() string {
 		sb.WriteString(fmt.Sprintf("│   %s\n", r.Recovery.AutoRecoveryAction))
 		if r.Recovery.RollbackRequired {
 			sb.WriteString(fmt.Sprintf("│   Rollback to: %s\n", r.Recovery.RollbackTarget))
+			sb.WriteString("│   Method: sequential restore → remove → sweep using\n")
+			sb.WriteString("│   persisted snapshots captured before any write began.\n")
 		}
 	} else {
 		sb.WriteString("│ ✗ Manual intervention required\n")
