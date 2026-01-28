@@ -52,6 +52,7 @@ func doContinue(cmd *cobra.Command, args []string) {
 	}
 
 	lib.MustRunDeferredValidation()
+	lib.MustRunPreflightChecks()
 
 	plan_exec.TellPlan(plan_exec.ExecParams{
 		CurrentPlanId: lib.CurrentPlanId,

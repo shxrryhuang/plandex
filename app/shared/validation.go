@@ -47,6 +47,9 @@ const (
 	PhaseSynchronous ValidationPhase = "startup"
 	// PhaseDeferred runs only when the relevant provider / feature is invoked.
 	PhaseDeferred ValidationPhase = "deferred"
+	// PhasePreflight runs after provider validation but before any LLM call or
+	// file write — the last gate before "real work" begins.
+	PhasePreflight ValidationPhase = "preflight"
 )
 
 // ValidationError is a single validation failure.
