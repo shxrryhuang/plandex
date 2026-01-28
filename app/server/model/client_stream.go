@@ -410,7 +410,7 @@ func withStreamingRetries[T any](
 				Message:   err.Error(),
 				Retryable: false,
 			}
-			report := shared.FromProviderFailure(failure, nil)
+			report := shared.ErrorReportFromProviderFailure(failure, nil)
 			if unrecov := shared.DetectUnrecoverableCondition(report); unrecov != nil {
 				log.Printf("[Retry] Unrecoverable condition detected: %s", unrecov.Reason)
 				retryCtx.Unrecoverable = unrecov
@@ -456,7 +456,7 @@ func withStreamingRetries[T any](
 				Message:   err.Error(),
 				Retryable: true,
 			}
-			report := shared.FromProviderFailure(failure, nil)
+			report := shared.ErrorReportFromProviderFailure(failure, nil)
 			shared.StoreWithContext(report, retryCtx)
 			retryCtx.RecordAttemptFailure(attemptIdx, modelErr, &strategy, 0, isFallback, fallbackRes.FallbackType)
 
