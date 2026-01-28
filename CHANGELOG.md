@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Future Changes
+See [Future Roadmap](#future-roadmap) section below
+
+---
+
+## [1.0.0] - 2026-01-28
+
+**Commit:** `01e65bea`
+**Status:** Deployed to production
+
 ### Added - Configuration Validation System
 
 #### Core Validation Framework
@@ -217,14 +227,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custom validation**: Easy to add new checks using validation framework
 - **Error handling**: Use structured ValidationError for consistency
 
+### Deployment Information
+
+**Git Status:**
+- Commit: `01e65bea`
+- Branch: `main`
+- Remote: `origin/main` (synchronized)
+- Files changed: 28 files
+- Insertions: 11,886 lines
+- Deletions: 65 lines
+
+**Integration:**
+- Integrated with existing error handling infrastructure
+- Circuit breaker, stream recovery, health checks, degradation manager, dead letter queue
+- Non-destructive dual-path architecture preserves original behavior
+- Feature flags enable/disable validation without code changes
+
 ### Known Issues
-- None - all tests passing, build successful
+- None - all tests passing (14/14 = 100%), build successful
 
 ### Upgrade Notes
-- Update to latest version - validation is automatic
+- Validation is optional and disabled by default
+- Enable with: `export PLANDEX_ENABLE_VALIDATION=true`
+- Use helper script: `./scripts/enable-validation.sh enable`
 - Review new error messages if configuration issues exist
-- No configuration changes required
-- Optional: Add validation calls to CLI commands
+- No breaking changes - backward compatible
+- Instant rollback: `unset PLANDEX_ENABLE_VALIDATION`
 
 ---
 

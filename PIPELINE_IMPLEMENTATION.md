@@ -195,7 +195,12 @@ func mainSafe() {
         log.Fatal("Startup validation failed: ", err)
     }
 
-    // ... rest of startup code ...
+    // ... rest of startup code includes:
+    // - LiteLLM proxy initialization
+    // - Error handling infrastructure (circuit breaker, stream recovery, etc.)
+    // - Router setup
+    // - Database initialization
+    // - Server startup
 }
 
 func safeValidateStartupConfiguration(ctx context.Context) error {
@@ -215,6 +220,17 @@ func safeValidateStartupConfiguration(ctx context.Context) error {
     return nil
 }
 ```
+
+**Integration with Error Handling:**
+
+The `main_safe.go` file initializes Plandex's error handling infrastructure after LiteLLM startup:
+- **Circuit Breaker** - Prevents cascading failures
+- **Stream Recovery Manager** - Handles stream interruptions
+- **Health Check Manager** - Monitors system health
+- **Degradation Manager** - Graceful degradation under load
+- **Dead Letter Queue** - Captures failed operations
+
+These components run **regardless** of validation being enabled/disabled, ensuring robust error management in both code paths.
 
 **Key behaviors:**
 
