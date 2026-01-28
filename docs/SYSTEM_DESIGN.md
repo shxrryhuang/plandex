@@ -1,7 +1,7 @@
 # Plandex System Design Document
 
 **Version:** 1.2
-**Last Updated:** January 2026 (Added Startup & Provider Validation, CI Pipeline, Error Scan)
+**Last Updated:** January 28, 2026 (Added Startup & Provider Validation, CI Pipeline, Error Scan; wired retry policy, operation safety, and retry context into streaming retry loop)
 
 ---
 
@@ -95,6 +95,12 @@ Plandex is an AI-powered coding assistant that helps developers plan and impleme
 │    │  ┌──────────────────────────┴───────────────────────────────────┐ │   │
 │    │  │                    Model Client Layer                         │ │   │
 │    │  │  ┌─────────────────────────────────────────────────────────┐ │ │   │
+│    │  │  │           Retry & Safety Guard                           │ │ │   │
+│    │  │  │  RetryConfig · OperationSafety · RetryContext            │ │ │   │
+│    │  │  │  withStreamingRetries → backoff → journal → registry     │ │ │   │
+│    │  │  └──────────────────────────┬──────────────────────────────┘ │ │   │
+│    │  │                             │                                 │ │   │
+│    │  │  ┌──────────────────────────┴──────────────────────────────┐ │ │   │
 │    │  │  │              LiteLLM Proxy (Python)                     │ │ │   │
 │    │  │  │  Unified interface to multiple AI providers             │ │ │   │
 │    │  │  └─────────────────────────────────────────────────────────┘ │ │   │
@@ -216,7 +222,7 @@ app/shared/
 ├── data_models.go            # Core API types
 ├── ai_models_available.go    # Available models
 ├── ai_models_providers.go    # Provider configs
-├── ai_models_errors.go       # Model error types
+├── ai_models_errors.go       # Model error types (+ ProviderFailureType field)
 ├── plan_config.go            # Plan settings
 ├── context.go                # Context types
 ├── req_res.go                # Request/response wrappers
@@ -226,12 +232,16 @@ app/shared/
 ├── validation_test.go        # 18 unit tests
 │
 ├── # Recovery & Resilience System
-├── provider_failures.go      # Provider failure classification
+├── provider_failures.go      # Provider failure classification & per-type RetryStrategy
+├── retry_config.go           # Configurable retry policy (env overrides, backoff, jitter)
+├── operation_safety.go       # OperationSafety enum + IsOperationSafe() idempotency guard
+├── retry_context.go          # RetryContext — per-attempt tracking, journal bridge
 ├── file_transaction.go       # Transactional file operations
 ├── resume_algorithm.go       # Safe resume from checkpoints
 ├── error_report.go           # Comprehensive error reporting
-├── unrecoverable_errors.go   # Unrecoverable edge cases
-├── run_journal.go            # Execution journal & checkpoints
+├── error_registry.go         # Persistent error store (StoreWithContext bridge)
+├── unrecoverable_errors.go   # Unrecoverable edge cases + DetectUnrecoverableCondition
+├── run_journal.go            # Execution journal (RecordRetryAttempt/RecordRetryOutcome)
 └── replay_types.go           # Replay mode types
 ```
 
@@ -451,10 +461,24 @@ User: plandex tell "add login feature"
 │                         │                               │
 │                         ▼                               │
 │  ┌───────────────────────────────────────────────────┐ │
+│  │       Retry & Safety Guard                         │ │
+│  │  - Check OperationSafety (Safe/Conditional/       │ │
+│  │    Irreversible) before each attempt               │ │
+│  │  - withStreamingRetries[T] wraps the call         │ │
+│  │  - On failure: classify → GetStrategy →           │ │
+│  │    ComputeBackoffDelay → RecordAttempt             │ │
+│  │  - On give-up: DetectUnrecoverableCondition →     │ │
+│  │    StoreWithContext → RecordRetryOutcome           │ │
+│  └───────────────────────────────────────────────────┘ │
+│                         │                               │
+│                         ▼                               │
+│  ┌───────────────────────────────────────────────────┐ │
 │  │              LiteLLM Proxy                         │ │
 │  │  Routes to appropriate AI provider                 │ │
 │  └───────────────────────────────────────────────────┘ │
 │                         │                               │
+│             ◄───────────┘  (retry on failure)           │
+│             │                                           │
 │                         ▼                               │
 │  ┌───────────────────────────────────────────────────┐ │
 │  │          Stream Processor                          │ │
@@ -837,7 +861,8 @@ Summarization triggered when conversation exceeds threshold
 - Heartbeat system for active plans (3s interval, 60s timeout)
 - Graceful shutdown with 60s timeout for active operations
 - Queue-based operation batching (same-branch reads batched, writes exclusive)
-- Exponential backoff retry (6 attempts, 300ms initial, 2x factor, ±30% jitter)
+- DB-lock exponential backoff retry (6 attempts, 300ms initial, 2x factor, ±30% jitter)
+  *(distinct from provider retry — see §11 for AI provider retry policy via `RetryConfig`)*
 
 **Diagnostic Tools:**
 - `plandex doctor` - Check for stale locks and system health
@@ -856,9 +881,12 @@ Summarization triggered when conversation exceeds threshold
 
 The recovery system provides fault tolerance for AI-assisted coding operations through:
 - **Provider Failure Classification** - Distinguishing retryable vs non-retryable errors
+- **Configurable Retry Policy** - Per-failure-type exponential backoff with jitter, provider Retry-After respect, and env-driven overrides (`RetryConfig`)
+- **Operation Safety Guard** - Prevents retrying irreversible side effects; classifies every operation as Safe / Conditional / Irreversible (`OperationSafety`)
+- **Structured Retry Tracking** - Every attempt recorded with timing, failure type, strategy, and fallback info (`RetryContext`)
 - **Transactional File Operations** - ACID-like guarantees with rollback support
 - **Resume Algorithm** - Safe continuation from checkpoints
-- **Comprehensive Error Reporting** - Root cause, context, and recovery guidance
+- **Comprehensive Error Reporting** - Root cause, context, and recovery guidance; unrecoverable detection now invoked from the live retry loop
 
 ### 11.2 Architecture
 
@@ -877,6 +905,20 @@ The recovery system provides fault tolerance for AI-assisted coding operations t
 │  │  │server_error │  │content_policy│  │ • Provider fallback        │  │   │
 │  │  │  timeout    │  │context_long │  │ • Max attempts              │  │   │
 │  │  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │              Configurable Retry Policy + Safety Guard                 │   │
+│  │          (retry_config.go, operation_safety.go, retry_context.go)    │   │
+│  │  ┌──────────────┐  ┌────────────────┐  ┌──────────────────────────┐ │   │
+│  │  │ RetryConfig  │  │OperationSafety│  │     RetryContext         │ │   │
+│  │  │ • Per-type   │  │ • Safe         │  │ • []RetryAttempt         │ │   │
+│  │  │   overrides  │  │ • Conditional  │  │ • Attempt timing/delay   │ │   │
+│  │  │ • Env vars   │  │ • Irreversible │  │ • Fallback tracking      │ │   │
+│  │  │ • Backoff    │  │ • IsOp Safe()  │  │ • FinalizeWithError()    │ │   │
+│  │  │   math       │  │ • ClassifyOp() │  │ • Journal + Registry     │ │   │
+│  │  └──────────────┘  └────────────────┘  └──────────────────────────┘ │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                    │                                        │
 │                                    ▼                                        │
@@ -925,21 +967,33 @@ The recovery system provides fault tolerance for AI-assisted coding operations t
 
 ### 11.3 Provider Failure Classification
 
+Every classified error now carries a `ProviderFailureType` field that maps
+directly into `GetRetryStrategy()`, so the retry loop can look up the
+correct backoff parameters without additional logic.
+
 **Retryable Failures:**
-| Type | HTTP Code | Strategy |
-|------|-----------|----------|
-| Rate Limit | 429 | Exponential backoff, respect Retry-After |
-| Overloaded | 503, 529 | Backoff + provider fallback |
-| Server Error | 500, 502 | Immediate retry with backoff |
-| Timeout | 504 | Immediate retry |
+| Type | HTTP Code | Strategy | Default Attempts |
+|------|-----------|----------|-----------------|
+| Rate Limit | 429 | Exponential backoff ×2, respect Retry-After | 5 |
+| Overloaded | 503, 529 | Backoff ×2 + jitter, tries fallback | 5 |
+| Server Error | 500, 502 | Backoff ×2 + jitter, tries fallback | 3 |
+| Timeout | 504 | Immediate retry | 2 |
+| Connection Error | — | Short backoff ×1.5 | 3 |
+| Stream Interrupted | — | Backoff ×1.5 | 2 |
+| Cache Error | — | Single retry, no delay | 1 |
+| Provider Unavailable | 502 | Backoff ×2, tries fallback | 3 |
 
 **Non-Retryable Failures:**
 | Type | HTTP Code | Required Action |
 |------|-----------|-----------------|
 | Auth Invalid | 401 | Fix API credentials |
 | Quota Exhausted | 402, 429* | Add credits/upgrade |
-| Context Too Long | 400, 413 | Reduce input size |
+| Context Too Long | 400, 413 | Reduce input size or switch model |
 | Content Policy | 400 | Modify content |
+| Model Not Found | 404 | Use valid model ID |
+| Unsupported Feature | 501 | Change approach |
+
+*Note: HTTP 429 is rate-limited (retryable) when the message indicates per-minute throttling, and quota-exhausted (non-retryable) when it indicates a billing cap. The classifier checks message keywords to distinguish them.*
 
 ### 11.4 Transactional File Operations
 
@@ -987,30 +1041,45 @@ The system explicitly identifies scenarios where automatic recovery is impossibl
 | External State | Concurrent modification, file conflicts | Merge guidance, divergence resolution |
 | System Resource | Disk full, permission errors | System administration actions |
 
-### 11.7 Idempotency Guarantees
+### 11.7 Idempotency & Safety Guarantees
 
-Retries are guaranteed to produce identical results through:
+Retries are guaranteed to be safe and produce equivalent results through:
 
-1. **Snapshot-based rollback** - Original content captured once, restored before retry
-2. **Journal entry deduplication** - Status tracking prevents re-execution of completed steps
-3. **Hash-based verification** - File states validated against expected hashes
-4. **Operation sequencing** - Strict ordering with rollback in reverse order
+1. **Operation Safety Classification** - Every operation is tagged Safe, Conditional, or Irreversible by `ClassifyOperation()`.  Irreversible operations (shell exec, external API writes) are blocked from retry unless `PLANDEX_RETRY_IRREVERSIBLE=true` is set.
+2. **Snapshot-based rollback** - Original content captured once, restored before retry.  Conditional operations (file writes) can be rolled back to a checkpoint before re-execution.
+3. **Journal entry deduplication** - Status tracking prevents re-execution of completed steps
+4. **Hash-based verification** - File states validated against expected hashes
+5. **Operation sequencing** - Strict ordering with rollback in reverse order
+6. **Retry attempt tracing** - `RetryContext` records every attempt with timing, strategy, and fallback info so the system can distinguish "retried and succeeded" from "retried and exhausted"
 
 ### 11.8 Key Files
 
 ```
 app/shared/
-├── provider_failures.go       # Provider failure classification (900+ lines)
-├── provider_failures_test.go  # 18 test cases
-├── file_transaction.go        # Transactional file operations (600+ lines)
-├── file_transaction_test.go   # 21 test cases
-├── resume_algorithm.go        # Safe resume from checkpoint (600+ lines)
-├── resume_algorithm_test.go   # 18 test cases
-├── error_report.go            # Comprehensive error reporting (500+ lines)
-├── error_report_test.go       # 16 test cases
-├── unrecoverable_errors.go    # Edge case documentation (600+ lines)
-├── unrecoverable_errors_test.go # 16 test cases
-└── run_journal.go             # Execution journal with checkpoints
+├── provider_failures.go          # Provider failure classification & GetRetryStrategy()
+├── provider_failures_test.go     # 18 test cases
+├── retry_config.go               # Configurable retry policy (RetryConfig, ComputeBackoffDelay)
+├── retry_config_test.go          # 12 test cases — backoff math, jitter, env loading
+├── operation_safety.go           # Idempotency guard (OperationSafety, ClassifyOperation)
+├── operation_safety_test.go      # 3 test cases — safety levels, classification
+├── retry_context.go              # Structured retry tracking (RetryContext, RetryAttempt)
+├── retry_context_test.go         # 13 test cases — attempt lifecycle, CanRetry, fallback
+├── ai_models_errors.go           # ModelError type (now includes ProviderFailureType)
+├── file_transaction.go           # Transactional file operations
+├── file_transaction_test.go      # 21 test cases
+├── resume_algorithm.go           # Safe resume from checkpoint
+├── resume_algorithm_test.go      # 18 test cases
+├── error_report.go               # Comprehensive error reporting
+├── error_report_test.go          # 16 test cases
+├── error_registry.go             # Persistent error storage (StoreWithContext added)
+├── unrecoverable_errors.go       # Edge case documentation & detection
+├── unrecoverable_errors_test.go  # 16 test cases
+└── run_journal.go                # Execution journal (RecordRetryAttempt/Outcome added)
+
+app/server/model/
+├── model_error.go                # HTTP classifier — populates ProviderFailureType
+├── client.go                     # Constants + defaultRetryConfig init
+└── client_stream.go              # withStreamingRetries — wired to RetryConfig + RetryContext
 ```
 
 ### 11.9 Test Coverage
@@ -1018,11 +1087,14 @@ app/shared/
 | Component | Tests | Coverage |
 |-----------|-------|----------|
 | Provider Failures | 18 | Classification, retry strategies, real-world scenarios |
+| Retry Config | 12 | Backoff growth, jitter bounds, max clamping, env loading, Retry-After cap |
+| Operation Safety | 3 | Safety strings, IsOperationSafe for all combos, ClassifyOperation |
+| Retry Context | 13 | Attempt lifecycle, CanRetry caps, fallback recording, timing, Summary |
 | File Transaction | 21 | CRUD, rollback, checkpoints, provider failure handling |
 | Resume Algorithm | 18 | Checkpoint selection, validation, repair actions |
 | Error Reporting | 16 | Formatting, context, recovery actions |
 | Unrecoverable Errors | 16 | Edge cases, user communication |
-| **Total** | **89** | Full recovery system coverage |
+| **Total** | **117** | Full recovery system coverage |
 
 ---
 
@@ -1191,9 +1263,22 @@ Key Shared Files:
   /app/shared/data_models.go              Core types (15.2 KB)
   /app/shared/ai_models_available.go      Model definitions (29 KB)
   /app/shared/validation.go               Validation framework (types, helpers)
+  /app/shared/ai_models_errors.go         ModelError + ProviderFailureType
+  /app/shared/provider_failures.go        Failure classification + RetryStrategy defs
+  /app/shared/retry_config.go             RetryConfig: per-type policy, env loading, backoff math
+  /app/shared/operation_safety.go         OperationSafety enum + IsOperationSafe() guard
+  /app/shared/retry_context.go            RetryContext: per-attempt tracking + journal bridge
+  /app/shared/error_registry.go           Persistent error store + StoreWithContext()
+  /app/shared/run_journal.go              Execution journal: RecordRetryAttempt/Outcome
+  /app/shared/error_report.go             ErrorReport: root cause + recovery actions
+  /app/shared/unrecoverable_errors.go     DetectUnrecoverableCondition() + user templates
 
 Key CLI Validation Files:
   /app/cli/lib/startup_validation.go      Startup + provider validation logic
+
+Key Model Files:
+  /app/server/model/model_error.go        ClassifyModelError() → ProviderFailureType
+  /app/server/model/client_stream.go      withStreamingRetries[T] — live retry loop
 ```
 
 ---
@@ -1212,4 +1297,4 @@ Key CLI Validation Files:
 
 ---
 
-*Document generated: January 2026*
+*Document generated: January 2026 · Last updated: January 28, 2026 (v1.2)*

@@ -26,16 +26,20 @@ type ModelError struct {
 	// ProviderFailure contains the full classification details from the unified system
 	// This allows access to richer error information while maintaining backwards compatibility
 	ProviderFailure *ProviderFailure `json:"providerFailure,omitempty"`
+
+	// ProviderFailureType maps this error to the structured FailureType
+	// taxonomy defined in provider_failures.go.  This allows the retry loop
+	// to look up the correct RetryStrategy via GetRetryStrategy().
+	ProviderFailureType FailureType
 }
 
 // =============================================================================
 // PROVIDER FAILURE INTEGRATION
 // =============================================================================
 
-// FromProviderFailure converts a ProviderFailure to ModelError
-// This provides backwards compatibility with existing code that uses ModelError
-// while allowing the system to leverage the richer ProviderFailure classification
-func FromProviderFailure(pf *ProviderFailure) *ModelError {
+// ProviderFailureToModelError converts a ProviderFailure to a ModelError
+// for backwards compatibility with existing code that uses ModelError
+func ProviderFailureToModelError(pf *ProviderFailure) *ModelError {
 	if pf == nil {
 		return nil
 	}
@@ -57,10 +61,11 @@ func FromProviderFailure(pf *ProviderFailure) *ModelError {
 	}
 
 	return &ModelError{
-		Kind:              kind,
-		Retriable:         pf.Retryable,
-		RetryAfterSeconds: pf.RetryAfterSeconds,
-		ProviderFailure:   pf,
+		Kind:                kind,
+		Retriable:           pf.Retryable,
+		RetryAfterSeconds:   pf.RetryAfterSeconds,
+		ProviderFailure:     pf,
+		ProviderFailureType: pf.Type,
 	}
 }
 
@@ -83,6 +88,11 @@ func (m *ModelError) GetRetryPolicy() *RetryPolicy {
 	// If we have a ProviderFailure, use its type for policy lookup
 	if m.ProviderFailure != nil {
 		return GetPolicyForFailure(m.ProviderFailure.Type)
+	}
+
+	// If we have a ProviderFailureType, use it directly
+	if m.ProviderFailureType != "" {
+		return GetPolicyForFailure(m.ProviderFailureType)
 	}
 
 	// Otherwise, map from ModelErrKind

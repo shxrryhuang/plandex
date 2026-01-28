@@ -747,48 +747,97 @@ func ApplyFiles(toApply map[string]string, toRemove map[string]bool, projectPath
 	}
 
 	for path, remove := range toRemove {
-		go func(path string, remove bool) {
-			if !remove {
-				errCh <- nil
-				return
-			}
-			// Compute destination path
-			dstPath := filepath.Join(fs.ProjectRoot, path)
-			// Check if the file exists
-			var exists bool
-			var mode os.FileMode
-			info, err := os.Stat(dstPath)
-			if err == nil {
-				exists = true
-				mode = info.Mode()
-			} else {
-				if os.IsNotExist(err) {
-					exists = false
-				} else {
-					errCh <- fmt.Errorf("failed to check if %s exists: %s", dstPath, err.Error())
-					return
-				}
-			}
-			if exists {
-				content, err := os.ReadFile(dstPath)
-				if err != nil {
-					errCh <- fmt.Errorf("failed to read %s: %s", dstPath, err.Error())
-					return
-				}
-				err = os.Remove(dstPath)
-				if err != nil && !os.IsNotExist(err) {
-					errCh <- fmt.Errorf("failed to remove %s: %s", dstPath, err.Error())
-					return
-				}
-				mu.Lock()
-				toRevert[dstPath] = types.ApplyReversion{Content: string(content), Mode: mode}
-				mu.Unlock()
-			}
-			errCh <- nil
-		}(path, remove)
+		if !remove {
+			continue
+		}
+		reporter.OnFileStatus(shared.FileStatus{
+			Path:      path,
+			Phase:     shared.PhaseStaging,
+			OpType:    "delete",
+			Timestamp: time.Now(),
+		})
+		if err := tx.DeleteFile(path); err != nil {
+			tx.Rollback("staging failed")
+			return nil, nil, fmt.Errorf("failed to stage deletion for %s: %w", path, err)
+		}
+		updatedPaths = append(updatedPaths, path)
 	}
 
-	for i := 0; i < totalOps; i++ {
+	if len(tx.Operations) == 0 {
+		// Nothing to do – commit the empty transaction cleanly.
+		tx.Commit()
+		reporter.OnPatchEvent(shared.PatchEvent{
+			TxId:      tx.Id,
+			Phase:     shared.PhaseDone,
+			Timestamp: time.Now(),
+		})
+		return updatedPaths, &types.ApplyRollbackPlan{
+			PreviousProjectPaths: projectPaths,
+			ToRevert:             map[string]types.ApplyReversion{},
+		}, nil
+	}
+
+	// --- Phase: applying (write files sequentially via transaction) ----------
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PatchPhaseApplying,
+		FileCount: len(tx.Operations),
+		Timestamp: time.Now(),
+	})
+
+	for {
+		op, err := tx.ApplyNext()
+		if op == nil {
+			break // no more pending operations
+		}
+
+		reporter.OnFileStatus(shared.FileStatus{
+			Path:      op.Path,
+			Phase:     shared.PatchPhaseApplying,
+			OpType:    string(op.Type),
+			Timestamp: time.Now(),
+		})
+
+		if err != nil {
+			// A single file failed – rollback the entire transaction.
+			reporter.OnFileStatus(shared.FileStatus{
+				Path:      op.Path,
+				Phase:     shared.PhaseDone,
+				OpType:    string(op.Type),
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
+			reporter.OnPatchEvent(shared.PatchEvent{
+				TxId:      tx.Id,
+				Phase:     shared.PhaseRollingBack,
+				Reason:    fmt.Sprintf("write failed for %s: %v", op.Path, err),
+				Timestamp: time.Now(),
+			})
+
+			rbErr := tx.Rollback(fmt.Sprintf("apply failed: %v", err))
+			if rbErr != nil {
+				return nil, nil, fmt.Errorf("apply failed for %s (%v) and rollback also failed: %w", op.Path, err, rbErr)
+			}
+			return nil, nil, fmt.Errorf("apply failed for %s: %w", op.Path, err)
+		}
+	}
+
+	// --- Phase: done ------------------------------------------------------
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("transaction commit failed: %w", err)
+	}
+
+	reporter.OnPatchEvent(shared.PatchEvent{
+		TxId:      tx.Id,
+		Phase:     shared.PhaseDone,
+		Timestamp: time.Now(),
+	})
+
+	return updatedPaths, &types.ApplyRollbackPlan{
+		PreviousProjectPaths: projectPaths,
+		ToRevert:             map[string]types.ApplyReversion{},
+	}, nil
+}
 		err := <-errCh
 		if err != nil {
 			return nil, nil, err

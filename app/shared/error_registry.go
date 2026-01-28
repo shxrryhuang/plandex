@@ -505,6 +505,29 @@ func StoreError(report *ErrorReport) string {
 	return GlobalErrorRegistry.Store(report)
 }
 
+// StoreWithContext stores an error report enriched with retry context data.
+// It records total attempts, whether the error is unrecoverable, and the
+// operation type as tags on the ErrorReport before persisting.
+func StoreWithContext(report *ErrorReport, retryCtx *RetryContext) string {
+	if report == nil {
+		return ""
+	}
+
+	// Enrich with retry context metadata
+	if retryCtx != nil {
+		report.Tags = append(report.Tags,
+			fmt.Sprintf("retry_attempts:%d", retryCtx.TotalAttempts()),
+			fmt.Sprintf("operation:%s", retryCtx.OperationType),
+			fmt.Sprintf("safety:%s", retryCtx.Safety),
+		)
+		if retryCtx.Unrecoverable != nil {
+			report.Tags = append(report.Tags, "unrecoverable", string(retryCtx.Unrecoverable.Reason))
+		}
+	}
+
+	return StoreError(report)
+}
+
 // GetError is a convenience function to get an error from the global registry
 func GetError(id string) *StoredError {
 	if GlobalErrorRegistry == nil {

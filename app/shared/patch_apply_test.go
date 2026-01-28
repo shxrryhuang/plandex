@@ -99,7 +99,7 @@ func TestAtomicApply_HappyPath(t *testing.T) {
 	if err := tx.CreateFile("new.go", "package main\n// new\n"); err != nil {
 		t.Fatal(err)
 	}
-	reporter.OnPatchEvent(PatchEvent{TxId: tx.Id, Phase: PhaseApplying, Timestamp: time.Now()})
+	reporter.OnPatchEvent(PatchEvent{TxId: tx.Id, Phase: PatchPhaseApplying, Timestamp: time.Now()})
 
 	// Apply
 	for {
@@ -107,7 +107,7 @@ func TestAtomicApply_HappyPath(t *testing.T) {
 		if op == nil {
 			break
 		}
-		reporter.OnFileStatus(FileStatus{Path: op.Path, Phase: PhaseApplying, OpType: string(op.Type), Timestamp: time.Now()})
+		reporter.OnFileStatus(FileStatus{Path: op.Path, Phase: PatchPhaseApplying, OpType: string(op.Type), Timestamp: time.Now()})
 		if err != nil {
 			t.Fatalf("unexpected apply error: %v", err)
 		}
@@ -383,11 +383,11 @@ func TestAtomicApply_ReporterLifecycleonFailure(t *testing.T) {
 	os.MkdirAll(badDir, 0755)
 	tx.CreateFile("baddir/fail.txt", "will fail")
 
-	reporter.OnPatchEvent(PatchEvent{TxId: tx.Id, Phase: PhaseApplying, Timestamp: time.Now()})
+	reporter.OnPatchEvent(PatchEvent{TxId: tx.Id, Phase: PatchPhaseApplying, Timestamp: time.Now()})
 
 	// Apply ok.txt
 	op, err := tx.ApplyNext()
-	reporter.OnFileStatus(FileStatus{Path: op.Path, Phase: PhaseApplying, OpType: string(op.Type), Timestamp: time.Now()})
+	reporter.OnFileStatus(FileStatus{Path: op.Path, Phase: PatchPhaseApplying, OpType: string(op.Type), Timestamp: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}

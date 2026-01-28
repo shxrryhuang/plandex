@@ -1051,6 +1051,99 @@ func (j *RunJournal) GetFileState(path string) *FileStateRecord {
 }
 
 // =============================================================================
+// RETRY RECORDING
+// =============================================================================
+
+// RetryRecord captures a single retry attempt for journal auditing.
+type RetryRecord struct {
+	AttemptNumber  int       `json:"attemptNumber"`
+	StartedAt      time.Time `json:"startedAt"`
+	DurationMs     int64     `json:"durationMs"`
+	FailureType    string    `json:"failureType,omitempty"`
+	ErrorMessage   string    `json:"errorMessage,omitempty"`
+	Retriable      bool      `json:"retriable"`
+	DelayAppliedMs int64     `json:"delayAppliedMs,omitempty"`
+	UsedFallback   bool      `json:"usedFallback,omitempty"`
+	FallbackType   string    `json:"fallbackType,omitempty"`
+}
+
+// RecordRetryAttempt appends a retry record to the given journal entry's error
+// context.  If the entry has no error yet, one is created.  The retry history
+// is stored as a JSON-encoded list in the StackTrace field (which is
+// otherwise unused for provider errors) so existing serialisation works
+// without schema changes.
+func (j *RunJournal) RecordRetryAttempt(entryIndex int, record RetryRecord) error {
+	if entryIndex < 0 || entryIndex >= len(j.Entries) {
+		return fmt.Errorf("invalid entry index: %d", entryIndex)
+	}
+
+	entry := &j.Entries[entryIndex]
+	if entry.Error == nil {
+		entry.Error = &EntryError{
+			Message:   record.ErrorMessage,
+			Type:      record.FailureType,
+			Retryable: record.Retriable,
+		}
+	}
+
+	// Append to the StackTrace field as structured retry history
+	existing := entry.Error.StackTrace
+	recordJSON, _ := json.Marshal(record)
+	if existing == "" {
+		entry.Error.StackTrace = string(recordJSON)
+	} else {
+		entry.Error.StackTrace = existing + "\n" + string(recordJSON)
+	}
+
+	j.Header.UpdatedAt = time.Now()
+	return nil
+}
+
+// RecordRetryOutcome finalises the retry history for an entry.  If succeeded
+// is true, the entry error is cleared (the retry ultimately worked).
+// Otherwise the entry remains in failed state with the full retry trace.
+func (j *RunJournal) RecordRetryOutcome(entryIndex int, succeeded bool, totalAttempts int) error {
+	if entryIndex < 0 || entryIndex >= len(j.Entries) {
+		return fmt.Errorf("invalid entry index: %d", entryIndex)
+	}
+
+	entry := &j.Entries[entryIndex]
+	now := time.Now()
+
+	if succeeded {
+		entry.Status = EntryStatusCompleted
+		entry.CompletedAt = &now
+		if entry.StartedAt != nil {
+			entry.DurationMs = now.Sub(*entry.StartedAt).Milliseconds()
+		}
+		// Preserve retry trace but mark as resolved
+		if entry.Error != nil {
+			entry.Error.Message = fmt.Sprintf("resolved after %d attempt(s): %s", totalAttempts, entry.Error.Message)
+			entry.Error.Retryable = false
+		}
+	} else {
+		entry.Status = EntryStatusFailed
+		entry.CompletedAt = &now
+		if entry.StartedAt != nil {
+			entry.DurationMs = now.Sub(*entry.StartedAt).Milliseconds()
+		}
+		if entry.Error != nil {
+			entry.Error.Message = fmt.Sprintf("failed after %d attempt(s): %s", totalAttempts, entry.Error.Message)
+		}
+
+		j.State.EntriesFailed++
+		if entry.Error != nil {
+			j.State.LastError = entry.Error.Message
+			j.State.LastErrorEntry = entryIndex
+			j.State.LastErrorAt = &now
+		}
+	}
+
+	j.Header.UpdatedAt = now
+	return nil
+}
+
+// =============================================================================
 // SERIALIZATION
 // =============================================================================
 

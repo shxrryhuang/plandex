@@ -466,12 +466,109 @@ Primary: OpenAI GPT-4
 
 ---
 
+## Configurable Retry Policy
+
+All retry behaviour is governed by `RetryConfig` (`app/shared/retry_config.go`).
+Sensible defaults match the strategies documented above; every value is
+overridable at runtime.
+
+### Environment Variables
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `PLANDEX_MAX_RETRY_ATTEMPTS` | 0 (no cap) | Hard cap on total attempts for any operation |
+| `PLANDEX_MAX_RETRY_DELAY_MS` | 0 (no cap) | Maximum delay between retries (ms) |
+| `PLANDEX_MAX_PROVIDER_RETRY_AFTER_MS` | 10000 | If a provider's Retry-After exceeds this, treat as non-retryable |
+| `PLANDEX_RETRY_IRREVERSIBLE` | false | Allow retrying destructive / irreversible operations |
+
+### Per-Type Overrides (programmatic)
+
+```go
+cfg := shared.DefaultRetryConfig()
+cfg.Overrides = map[shared.FailureType]*shared.RetryStrategy{
+    shared.FailureTypeRateLimit: {
+        ShouldRetry:       true,
+        MaxAttempts:       2,
+        InitialDelayMs:    2000,
+        MaxDelayMs:        10000,
+        BackoffMultiplier: 1.5,
+        UseJitter:         true,
+        RespectRetryAfter: true,
+    },
+}
+```
+
+### Backoff Formula
+
+```
+delay = initialDelayMs × backoffMultiplier ^ attemptNumber
+```
+
+With **full jitter** enabled: `delay = random(0, delay)`.
+Result is clamped to `[0, effectiveMaxDelayMs]`.
+
+If the provider returns a `Retry-After` header, that value (+ 10 % padding)
+is used instead, subject to `MaxProviderRetryAfterMs`.
+
+---
+
+## Operation Safety & Idempotency Guard
+
+Before retrying, `withStreamingRetries` checks whether the operation is safe
+to re-execute via `OperationSafety` (`app/shared/operation_safety.go`):
+
+| Safety Level | Examples | Retry Allowed? |
+|-------------|----------|----------------|
+| **Safe** | Model requests, file reads, context loads | Always |
+| **Conditional** | File writes/edits (checkpoint-backed rollback available) | Yes, after rollback |
+| **Irreversible** | Shell exec, external API writes, deploys | Only if `PLANDEX_RETRY_IRREVERSIBLE=true` |
+
+`ClassifyOperation()` maps well-known operation-type strings to safety levels
+automatically.  Unknown types default to **Safe** so that model requests
+(the most common case) work without explicit configuration.
+
+---
+
+## Structured Retry Tracking (RetryContext)
+
+Every retry loop creates a `RetryContext` (`app/shared/retry_context.go`)
+that accumulates a `[]RetryAttempt` record for each execution attempt.
+Each attempt captures:
+
+- Attempt number and wall-clock timing
+- Classified `ModelError` and resolved `FailureType`
+- The `RetryStrategy` that was applied
+- Computed delay before the next attempt
+- Whether a fallback provider/model was used
+
+On final failure the context calls `DetectUnrecoverableCondition()` and,
+if triggered, persists an `ErrorReport` (with full attempt history) into
+the `ErrorRegistry`.  The run journal's `RecordRetryAttempt` / `RecordRetryOutcome`
+helpers mirror the trace into the `JournalEntry` for post-mortem auditing.
+
+---
+
 ## Implementation Reference
 
 See `app/shared/provider_failures.go` for:
 - `ClassifyProviderFailure()` - Main classification function
 - `GetRetryStrategy()` - Get retry parameters for failure type
 - `GetProviderFailureExamples()` - All documented examples
+
+See `app/shared/retry_config.go` for:
+- `RetryConfig` struct and `DefaultRetryConfig()`
+- `LoadRetryConfigFromEnv()` - environment-driven configuration
+- `ComputeBackoffDelay()` - exponential backoff with jitter and clamping
+
+See `app/shared/operation_safety.go` for:
+- `OperationSafety` enum (Safe / Conditional / Irreversible)
+- `IsOperationSafe()` - retry permission check
+- `ClassifyOperation()` - automatic operation-type classification
+
+See `app/shared/retry_context.go` for:
+- `RetryContext` and `RetryAttempt` structs
+- `NewRetryContext()`, `CanRetry()`, `FinalizeWithError()`
+- Bridge to `ErrorRegistry` via `StoreWithContext()`
 
 See `app/shared/error_report.go` for:
 - `FromProviderFailure()` - Create error report with recovery guidance
@@ -480,8 +577,15 @@ See `app/shared/error_report.go` for:
 
 See `app/shared/unrecoverable_errors.go` for:
 - `GetUnrecoverableEdgeCases()` - Documented unrecoverable scenarios
-- `DetectUnrecoverableCondition()` - Identify non-recoverable states
+- `DetectUnrecoverableCondition()` - Identify non-recoverable states (now called from retry loop)
 - User communication templates with manual actions
+
+See `app/shared/run_journal.go` for:
+- `RecordRetryAttempt()` - log each retry attempt with structured metadata
+- `RecordRetryOutcome()` - finalise journal entry as resolved or failed
+
+See `app/shared/error_registry.go` for:
+- `StoreWithContext()` - persist errors enriched with retry-context tags
 
 See `app/shared/file_transaction.go` for:
 - `FileTransaction` — wraps every patch in a WAL-backed transaction with persisted snapshots
@@ -491,11 +595,16 @@ See `app/shared/file_transaction.go` for:
 
 See `app/server/model/model_error.go` for:
 - HTTP header parsing for Retry-After
-- Integration with existing error handling
+- `ClassifyModelError()` and `ClassifyErrMsg()` now populate `ProviderFailureType`
+
+See `app/server/model/client_stream.go` for:
+- `withStreamingRetries()` — the live retry loop, now wired to `RetryConfig`,
+  `RetryContext`, and `DetectUnrecoverableCondition()`
 
 ---
 
 ## Related Documentation
 
+- [Error Handling & Retry Strategy](./error-handling.md) - Full walkthrough scenarios and configuration reference
 - [System Design - Recovery Section](./SYSTEM_DESIGN.md#11-recovery--resilience-system) - Full architecture
 - [Replay Safety](./replay-safety.md) - Safe replay and recovery modes

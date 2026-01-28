@@ -197,6 +197,16 @@ These are set automatically when running shell commands in workspace context.
 
 ## Failure Handling
 
+### Provider Errors & Retries
+
+When an AI provider call fails inside an active workspace:
+
+1. The error is classified via `ClassifyModelError()`, which assigns a `ProviderFailureType`
+2. The retry loop (`withStreamingRetries`) consults `RetryConfig` for the per-type backoff strategy
+3. `OperationSafety` is checked — model requests are Safe and always retried; file writes are Conditional (rolled back to checkpoint before retry); shell commands are Irreversible and blocked from retry unless explicitly permitted via `PLANDEX_RETRY_IRREVERSIBLE=true`
+4. Each attempt is recorded in a `RetryContext` with timing, delay, and fallback info
+5. On final failure or unrecoverable detection, an `ErrorReport` is persisted to the `ErrorRegistry` and the `RunJournal` entry is finalised with the full retry trace
+
 ### Crash Recovery
 
 If Plandex crashes during an apply or commit operation:
@@ -370,6 +380,8 @@ Files are tracked with:
 - Workspaces persist across sessions
 - Resuming a plan uses the same workspace
 - Retry operations work within existing workspace
+- `RetryContext` records the full attempt history so that resuming after a crash shows exactly how many retries occurred, which fallbacks were used, and what delays were applied
+- Irreversible operations (e.g. shell commands that modify external state) are blocked from automatic retry; the user must explicitly opt in or resume manually
 
 ### Rollback
 

@@ -39,3 +39,31 @@ $ GIT_USER=<Your GitHub username> yarn deploy
 ```
 
 If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+
+---
+
+## Progress Reporting System Documentation
+
+The progress reporting system provides clear, real-time visibility into CLI execution.
+
+### Documentation Index
+
+| Document | Description |
+|----------|-------------|
+| [progress-reporting.md](progress-reporting.md) | Main design documentation |
+| [progress-reporting-feature-updates.md](progress-reporting-feature-updates.md) | Summary of all new features |
+| [progress-pipeline.md](progress-pipeline.md) | Standalone test pipeline |
+| [progress-reporting-bug-fixes.md](progress-reporting-bug-fixes.md) | Bug fixes in stream_tui |
+| [progress-pipeline-error-fixes.md](progress-pipeline-error-fixes.md) | Error fixes in pipeline |
+
+### Quick Start
+
+```bash
+cd app/cli
+
+# Run standalone pipeline demo
+go run ./progress/pipeline/cmd/
+
+# Run tests with race detection
+go test -race ./progress/pipeline/...
+```

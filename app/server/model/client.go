@@ -27,12 +27,23 @@ import (
 // streams offer more predictable cancellation partial results
 
 const (
-	ACTIVE_STREAM_CHUNK_TIMEOUT          = time.Duration(60) * time.Second
-	USAGE_CHUNK_TIMEOUT                  = time.Duration(10) * time.Second
+	ACTIVE_STREAM_CHUNK_TIMEOUT = time.Duration(60) * time.Second
+	USAGE_CHUNK_TIMEOUT         = time.Duration(10) * time.Second
+
+	// MAX_ADDITIONAL_RETRIES_WITH_FALLBACK caps retries after a provider
+	// fallback has been engaged.  The per-failure-type RetryStrategy governs
+	// retries on the primary provider; this constant limits the fallback tail.
 	MAX_ADDITIONAL_RETRIES_WITH_FALLBACK = 1
-	MAX_RETRIES_WITHOUT_FALLBACK         = 3
-	MAX_RETRY_DELAY_SECONDS              = 10
+
+	// MAX_RETRIES_WITHOUT_FALLBACK caps total retries on the primary provider
+	// before the system tries a fallback.  When a per-type strategy allows
+	// more attempts, this acts as the fallback-trigger threshold.
+	MAX_RETRIES_WITHOUT_FALLBACK = 3
 )
+
+// defaultRetryConfig is loaded once at package init and shared across all
+// streaming retry loops.  It is read-only after initialisation.
+var defaultRetryConfig = shared.LoadRetryConfigFromEnv()
 
 var httpClient = &http.Client{}
 
