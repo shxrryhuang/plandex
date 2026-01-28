@@ -1,7 +1,7 @@
 # Feature Updates
 
 **Date:** 2026-01-28
-**Status:** Complete — all systems tested, CLI builds cleanly, pipelines verified
+**Status:** Complete — all systems tested, CLI builds cleanly, pipelines verified, upstream merge bugs resolved
 
 ---
 
@@ -13,6 +13,33 @@
 | 2 | Error Handling & Retry Strategy | `ec63f2a3` | `app/shared/retry_policy.go`, `app/server/model/` |
 | 3 | Atomic Patch Application | `9f0109a8` | `app/shared/file_transaction.go`, `app/cli/lib/apply.go` |
 | 4 | Startup & Provider Validation | `e588f997` | `app/shared/validation.go`, `app/cli/lib/startup_validation.go` |
+| 5 | Build Bug Fixes (upstream merge) | `6f392fd5` | `app/shared/retry_context.go`, `app/cli/lib/apply.go`, `app/cli/progress/` |
+
+---
+
+## Build Bug Fixes — Upstream Merge Cleanup
+
+### Summary
+
+Three build-breaking issues introduced by incomplete upstream merges were identified and resolved. All stem from code that was partially grafted without the corresponding variable declarations or type updates.
+
+### Fixes
+
+| # | File | Root Cause | Fix |
+|---|------|------------|-----|
+| 1 | `app/shared/retry_context.go:173` | Called `FromProviderFailure()` — name does not exist in the package | Renamed call to `ErrorReportFromProviderFailure()` matching `error_report.go:252` |
+| 2 | `app/cli/lib/apply.go:749–840` | Orphaned transactional block referencing undeclared `reporter`, `tx`, `updatedPaths` left over from incomplete merge of the atomic patch system | Removed dead block; restored original goroutine-based `toRemove` loop and `errCh` drain that completes the function correctly |
+| 3 | `app/cli/progress/examples_test.go` + `pipeline_test.go` | Struct literals and callback signatures used `shared.Step` (the newer, simpler report struct) where `shared.ProgressStep` (the full progress-tracking struct with `Kind`, `State`, `CompletedAt`) is required by `ProgressReport.Steps` and `PipelineConfig` | Global replace `shared.Step` → `shared.ProgressStep` in both test files |
+
+### Build State After Fixes
+
+| Check | Result |
+|-------|--------|
+| `go build ./...` (shared) | PASS |
+| `go build ./...` (cli) | PASS |
+| `go vet ./...` (shared) | PASS |
+| `go vet ./...` (cli) | PASS |
+| Validation pipeline (format, vet, unit-tests, build) | All PASS |
 
 ---
 
