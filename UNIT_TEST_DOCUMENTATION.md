@@ -22,14 +22,15 @@
 
 **Project Statistics:**
 - **Total Go Code:** ~77,404 lines across 335 files
-- **Test Files:** 17 Go unit test files + 4 shell integration scripts
-- **Test Status:** **ALL 623 TESTS PASSING** (0 failing)
+- **Test Files:** 20 Go unit test files + 4 shell integration scripts
+- **Test Status:** **ALL 651 TESTS PASSING** (0 failing)
 
 ### Key Improvements Made
 1. **Stream Processor Bug Fixed** - `bufferOrStream()` now correctly handles stop sequences split across chunks
 2. **Context Leak Fixed** - Added `defer cancelBuild()` in `build_structured_edits.go`
-3. **Test Coverage Expanded** - From 64 tests to 623 tests (873% increase)
-4. **New Test Packages** - Added tests for model errors, tokens, diff, hooks, and file mapping
+3. **Test Coverage Expanded** - From 64 tests to 651 tests (917% increase)
+4. **New Test Packages** - Added tests for model errors, tokens, diff, hooks, file mapping, and the retry/safety subsystem
+5. **Retry & Safety Tests** - 28 new tests covering configurable backoff, jitter bounds, operation safety classification, and retry context lifecycle
 
 ---
 
@@ -39,9 +40,9 @@
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **PASSED** | 623 | 100% |
+| **PASSED** | 651 | 100% |
 | **FAILED** | 0 | 0% |
-| **TOTAL** | 623 | 100% |
+| **TOTAL** | 651 | 100% |
 
 ### Results by Module
 
@@ -58,6 +59,7 @@
 | `plandex-server/syntax/file_map` | 75 | ✅ PASS |
 | `plandex-server/types` | 102 | ✅ PASS |
 | `plandex-server/utils` | 122 | ✅ PASS |
+| `plandex-shared` (retry/safety) | 28 | ✅ PASS |
 
 ---
 
@@ -88,6 +90,9 @@
 | `hooks_test.go` | `hooks/` | 25 | Hook registration and execution |
 | `markup_test.go` | `syntax/file_map/` | 45 | HTML markup parsing |
 | `svelte_test.go` | `syntax/file_map/` | 30 | Svelte component parsing |
+| `retry_config_test.go` | `shared/` | 12 | Backoff math, jitter bounds, max clamping, env loading, Retry-After cap |
+| `operation_safety_test.go` | `shared/` | 3 | Safety strings, IsOperationSafe combos, ClassifyOperation |
+| `retry_context_test.go` | `shared/` | 13 | Attempt lifecycle, CanRetry caps, fallback recording, timing, Summary |
 
 ### Test Fixture Files
 | File | Location | Purpose |
@@ -191,6 +196,9 @@ Enabled linters:
 | `diff/` | 25 | Diff generation, replacements |
 | `hooks/` | 25 | Hook lifecycle |
 | `syntax/file_map/` | 75 | HTML/Svelte parsing |
+| `shared/ (retry)` | 12 | Backoff math, jitter, env loading, Retry-After cap |
+| `shared/ (safety)` | 3 | OperationSafety classification, IsOperationSafe |
+| `shared/ (context)` | 13 | RetryContext lifecycle, CanRetry, attempt tracing |
 
 ---
 
@@ -250,6 +258,7 @@ gofmt -l .
 | Jan 22, 2026 | 352 | Added active_plan, xml, parsers tests |
 | Jan 23, 2026 | 416 | Added XML fixture tests |
 | Jan 23, 2026 | 623 | Added model, diff, hooks, file_map tests |
+| Jan 28, 2026 | 651 | Added retry_config, operation_safety, retry_context tests (28 new) |
 
 ---
 

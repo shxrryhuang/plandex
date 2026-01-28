@@ -53,9 +53,10 @@ func ClassifyErrMsg(msg string) *shared.ModelError {
 		strings.Contains(msg, "input too long") {
 		log.Printf("Context too long error: %s", msg)
 		return &shared.ModelError{
-			Kind:              shared.ErrContextTooLong,
-			Retriable:         false,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrContextTooLong,
+			Retriable:           false,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeContextTooLong,
 		}
 	}
 
@@ -67,18 +68,20 @@ func ClassifyErrMsg(msg string) *shared.ModelError {
 		strings.Contains(msg, "resource has been exhausted") {
 		log.Printf("Overloaded error: %s", msg)
 		return &shared.ModelError{
-			Kind:              shared.ErrOverloaded,
-			Retriable:         true,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrOverloaded,
+			Retriable:           true,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeOverloaded,
 		}
 	}
 
 	if strings.Contains(msg, "cache control") {
 		log.Printf("Cache control error: %s", msg)
 		return &shared.ModelError{
-			Kind:              shared.ErrCacheSupport,
-			Retriable:         true,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrCacheSupport,
+			Retriable:           true,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeCacheError,
 		}
 	}
 
@@ -95,15 +98,17 @@ func ClassifyModelError(code int, message string, headers http.Header, isClaudeM
 		retryAfter := extractRetryAfter(headers, msg)
 		if retryAfter > 0 {
 			return shared.ModelError{
-				Kind:              shared.ErrSubscriptionQuotaExhausted,
-				Retriable:         true,
-				RetryAfterSeconds: retryAfter,
+				Kind:                shared.ErrSubscriptionQuotaExhausted,
+				Retriable:           true,
+				RetryAfterSeconds:   retryAfter,
+				ProviderFailureType: shared.FailureTypeRateLimit,
 			}
 		}
 		return shared.ModelError{
-			Kind:              shared.ErrSubscriptionQuotaExhausted,
-			Retriable:         false,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrSubscriptionQuotaExhausted,
+			Retriable:           false,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeQuotaExhausted,
 		}
 	}
 
@@ -119,41 +124,52 @@ func ClassifyModelError(code int, message string, headers http.Header, isClaudeM
 	switch code {
 	case 429, 529:
 		res = shared.ModelError{
-			Kind:              shared.ErrRateLimited,
-			Retriable:         true,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrRateLimited,
+			Retriable:           true,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeRateLimit,
 		}
 	case 413:
 		res = shared.ModelError{
-			Kind:              shared.ErrContextTooLong,
-			Retriable:         false,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrContextTooLong,
+			Retriable:           false,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeContextTooLong,
 		}
 
 	// rare codes but they never succeed on retry if they do show up
 	case 501, 505:
 		res = shared.ModelError{
-			Kind:              shared.ErrOther,
-			Retriable:         false,
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrOther,
+			Retriable:           false,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: shared.FailureTypeUnsupportedFeature,
 		}
 	default:
+		isRetriable := code >= 500 || strings.Contains(msg, "provider returned error") // 'provider returned error' is from OpenRouter, and unless it's a non-retriable status code, it should still be retried since OpenRouter may switch to a different provider
+		failureType := shared.FailureTypeServerError
+		if !isRetriable {
+			failureType = shared.FailureTypeInvalidRequest
+		} else if strings.Contains(msg, "provider returned error") {
+			failureType = shared.FailureTypeProviderUnavailable
+		}
 		res = shared.ModelError{
-			Kind:              shared.ErrOther,
-			Retriable:         code >= 500 || strings.Contains(msg, "provider returned error"), // 'provider returned error' is from OpenRouter, and unless it's a non-retriable status code, it should still be retried since OpenRouter may switch to a different provider
-			RetryAfterSeconds: 0,
+			Kind:                shared.ErrOther,
+			Retriable:           isRetriable,
+			RetryAfterSeconds:   0,
+			ProviderFailureType: failureType,
 		}
 	}
 
 	log.Printf("Model error: %+v", res)
 
-	// best‑effort parse of "Retry‑After" style hints in the message
+	// best-effort parse of "Retry-After" style hints in the message
 	if res.Retriable {
 		retryAfter := extractRetryAfter(headers, msg)
 
-		// if the retry after is greater than the max delay, then the error is not retriable
-		if retryAfter > MAX_RETRY_DELAY_SECONDS {
-			log.Printf("Retry after %d seconds is greater than the max delay of %d seconds - not retriable", retryAfter, MAX_RETRY_DELAY_SECONDS)
+		// if the retry after exceeds the configured ceiling, mark as non-retryable
+		if !defaultRetryConfig.IsProviderRetryAfterAcceptable(retryAfter) {
+			log.Printf("Retry after %d seconds exceeds configured max (%dms) - not retriable", retryAfter, defaultRetryConfig.MaxProviderRetryAfterMs)
 			res.Retriable = false
 		} else {
 			res.RetryAfterSeconds = retryAfter
@@ -222,10 +238,15 @@ func normalizeUnit(numStr, unit string) int {
 		return n / 1000
 	case "sec", "secs", "second", "seconds", "s":
 		return n // already in seconds
-	default: // unit omitted ⇒ assume seconds
+	default: // unit omitted => assume seconds
 		return n
 	}
 }
+
+// MAX_RETRY_DELAY_SECONDS is the ceiling for provider-declared Retry-After
+// values in the classifyHTTPError path.  Values above this are treated as
+// non-retryable to prevent unbounded waits.
+const MAX_RETRY_DELAY_SECONDS = 60
 
 // classifyBasicError uses the unified ProviderFailure classification system
 // and converts the result to a ModelError for backwards compatibility
@@ -260,7 +281,7 @@ func classifyBasicErrorWithProvider(err error, isClaudeMax bool, provider string
 
 	// First, check for non-retryable context errors
 	if isNonRetriableBasicErr(err) {
-		return shared.ModelError{Kind: shared.ErrOther, Retriable: false}
+		return shared.ModelError{Kind: shared.ErrOther, Retriable: false, ProviderFailureType: shared.FailureTypeInvalidRequest}
 	}
 
 	// Try message-based classification
@@ -274,7 +295,7 @@ func classifyBasicErrorWithProvider(err error, isClaudeMax bool, provider string
 	// For unknown errors without HTTP code, assume retryable (generic transient errors)
 	// This preserves the original behavior for things like "temporary network failure"
 	log.Printf("classifyBasicError: unknown error without HTTP code - assuming retriable")
-	return shared.ModelError{Kind: shared.ErrOther, Retriable: true}
+	return shared.ModelError{Kind: shared.ErrOther, Retriable: true, ProviderFailureType: shared.FailureTypeServerError}
 }
 
 // classifyHTTPError handles classification for HTTP errors with status codes
@@ -309,7 +330,7 @@ func classifyHTTPError(httpCode int, body string, headers http.Header, isClaudeM
 	}
 
 	// Convert to ModelError for backwards compatibility
-	result := shared.FromProviderFailure(pf)
+	result := shared.ProviderFailureToModelError(pf)
 	if result == nil {
 		// Fallback if conversion fails
 		return shared.ModelError{

@@ -28,12 +28,12 @@ import "time"
 type PatchPhase string
 
 const (
-	PhasePreparing   PatchPhase = "preparing"    // Building operation list
-	PhaseStaging     PatchPhase = "staging"      // Capturing snapshots
-	PhaseApplying    PatchPhase = "applying"     // Writing files
-	PhaseCommitting  PatchPhase = "committing"   // Finalising transaction
-	PhaseRollingBack PatchPhase = "rolling_back" // Reverting applied ops
-	PhaseDone        PatchPhase = "done"         // Terminal: committed or rolled back
+	PhasePreparing      PatchPhase = "preparing"    // Building operation list
+	PhaseStaging        PatchPhase = "staging"      // Capturing snapshots
+	PatchPhaseApplying  PatchPhase = "applying"     // Writing files
+	PhaseCommitting     PatchPhase = "committing"   // Finalising transaction
+	PhaseRollingBack    PatchPhase = "rolling_back" // Reverting applied ops
+	PhaseDone           PatchPhase = "done"         // Terminal: committed or rolled back
 )
 
 // FileStatus is the per-file event emitted by the reporter.

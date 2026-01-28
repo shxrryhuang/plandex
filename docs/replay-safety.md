@@ -281,24 +281,45 @@ Replay mode integrates with the broader recovery and resilience system:
 
 | Component | File | Role in Safety |
 |-----------|------|----------------|
-| **Provider Failures** | `provider_failures.go` | Classifies errors as retryable vs non-retryable |
+| **Provider Failures** | `provider_failures.go` | Classifies errors as retryable vs non-retryable; defines per-type `RetryStrategy` |
+| **Retry Config** | `retry_config.go` | Configurable retry policy — env overrides, per-type backoff, Retry-After cap |
+| **Operation Safety** | `operation_safety.go` | Blocks retrying irreversible operations (shell exec, external writes) |
+| **Retry Context** | `retry_context.go` | Tracks every attempt with timing, strategy, fallback; bridges to journal + registry |
 | **File Transactions** | `file_transaction.go` | WAL-backed transactions with persisted snapshots, sequential apply, reverse-order rollback, and crash recovery via `RecoverTransaction()` |
 | **Resume Algorithm** | `resume_algorithm.go` | Safe continuation from checkpoints |
 | **Error Reporting** | `error_report.go` | Surfaces root cause, context, recovery options |
-| **Unrecoverable Errors** | `unrecoverable_errors.go` | Documents edge cases where recovery impossible |
+| **Error Registry** | `error_registry.go` | Persistent error store; `StoreWithContext()` enriches with retry history |
+| **Run Journal** | `run_journal.go` | `RecordRetryAttempt()` / `RecordRetryOutcome()` capture structured retry trace |
+| **Unrecoverable Errors** | `unrecoverable_errors.go` | Documents edge cases; `DetectUnrecoverableCondition()` invoked from retry loop |
 
 ### How Components Work Together
 
 ```
 Normal Execution (with failure):
     │
-    ├─▶ Provider Failure ──▶ ClassifyProviderFailure()
+    ├─▶ Provider Failure ──▶ ClassifyModelError() ──▶ sets ProviderFailureType
+    │         │
+    │         ├─▶ RetryContext.RecordAttemptStart()
     │         │
     │         ├─▶ Retryable? ──▶ FileTransaction.Rollback()
     │         │                   (reverse-order restore from persisted snapshots)
     │         │                   ──▶ Retry
     │         │
-    │         └─▶ Non-Retryable? ──▶ ErrorReport.Format() ──▶ User Action
+    │         ├─▶ IsOperationSafe()? ──▶ block if irreversible
+    │         │
+    │         ├─▶ CanRetry()? ──▶ GetRetryStrategy() ──▶ ComputeBackoffDelay()
+    │         │         │
+    │         │         ├─▶ Sleep(delay)
+    │         │         └─▶ RetryContext.RecordAttemptFailure()
+    │         │
+    │         ├─▶ Retryable? ──▶ FileTransaction.Rollback() ──▶ Retry attempt
+    │         │
+    │         └─▶ Non-Retryable / Exhausted?
+    │                   │
+    │                   ├─▶ DetectUnrecoverableCondition()
+    │                   ├─▶ StoreWithContext(report, retryCtx)
+    │                   ├─▶ RunJournal.RecordRetryOutcome()
+    │                   └─▶ ErrorReport.Format() ──▶ User Action
     │
     └─▶ Journal + Checkpoint saved (snapshots flushed before writes)
 
@@ -307,6 +328,7 @@ Replay Mode (after failure):
     ├─▶ List available sessions with `plandex replay list`
     │
     ├─▶ Inspect failure with `plandex replay show <id>`
+    │   └─ Full retry trace visible in journal (attempt count, delays, fallbacks)
     │
     ├─▶ ResumeFromCheckpoint() ──▶ Validate state ──▶ Continue safely
     │

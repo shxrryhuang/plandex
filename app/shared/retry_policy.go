@@ -301,21 +301,22 @@ type RetryState struct {
 	Policy *RetryPolicy `json:"policy,omitempty"`
 
 	// History of attempts for debugging
-	AttemptHistory []RetryAttempt `json:"attemptHistory,omitempty"`
+	AttemptHistory []RetryStateAttempt `json:"attemptHistory,omitempty"`
 }
 
-// RetryAttempt records details of a single retry attempt
-type RetryAttempt struct {
-	AttemptNumber int               `json:"attemptNumber"`
-	Timestamp     time.Time         `json:"timestamp"`
-	Provider      string            `json:"provider"`
-	DelayUsed     time.Duration     `json:"delayUsed"`
-	Error         string            `json:"error,omitempty"`
-	FailureType   FailureType       `json:"failureType,omitempty"`
-	PolicyUsed    string            `json:"policyUsed,omitempty"`
-	WillRetry     bool              `json:"willRetry"`
-	FallbackUsed  bool              `json:"fallbackUsed"`
-	FallbackType  FallbackType      `json:"fallbackType,omitempty"`
+// RetryStateAttempt records details of a single retry attempt within a RetryState sequence.
+// This is distinct from RetryAttempt (in retry_context.go) which is used by RetryContext.
+type RetryStateAttempt struct {
+	AttemptNumber int          `json:"attemptNumber"`
+	Timestamp     time.Time    `json:"timestamp"`
+	Provider      string       `json:"provider"`
+	DelayUsed     time.Duration `json:"delayUsed"`
+	Error         string       `json:"error,omitempty"`
+	FailureType   FailureType  `json:"failureType,omitempty"`
+	PolicyUsed    string       `json:"policyUsed,omitempty"`
+	WillRetry     bool         `json:"willRetry"`
+	FallbackUsed  bool         `json:"fallbackUsed"`
+	FallbackType  FallbackType `json:"fallbackType,omitempty"`
 }
 
 // NewRetryState creates a new retry state for tracking a request sequence
@@ -325,13 +326,13 @@ func NewRetryState(requestId, idempotencyKey, provider string) *RetryState {
 		IdempotencyKey:  idempotencyKey,
 		StartTime:       time.Now(),
 		CurrentProvider: provider,
-		AttemptHistory:  make([]RetryAttempt, 0),
+		AttemptHistory:  make([]RetryStateAttempt, 0),
 	}
 }
 
 // RecordAttempt records a retry attempt for debugging and auditing
 func (s *RetryState) RecordAttempt(delay time.Duration, failure *ProviderFailure, willRetry bool, fallbackType FallbackType) {
-	attempt := RetryAttempt{
+	attempt := RetryStateAttempt{
 		AttemptNumber: s.TotalAttempts,
 		Timestamp:     time.Now(),
 		Provider:      s.CurrentProvider,
@@ -406,7 +407,7 @@ type RetryResult struct {
 	PolicyUsed string `json:"policyUsed,omitempty"`
 
 	// AttemptHistory contains details of each attempt
-	AttemptHistory []RetryAttempt `json:"attemptHistory,omitempty"`
+	AttemptHistory []RetryStateAttempt `json:"attemptHistory,omitempty"`
 }
 
 // NewRetryResult creates a RetryResult from a RetryState
