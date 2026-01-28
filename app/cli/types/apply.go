@@ -5,12 +5,13 @@ import (
 )
 
 type ApplyFlags struct {
-	AutoConfirm bool
-	AutoCommit  bool
-	NoCommit    bool
-	AutoExec    bool
-	NoExec      bool
-	AutoDebug   int
+	AutoConfirm    bool
+	AutoCommit     bool
+	NoCommit       bool
+	AutoExec       bool
+	NoExec         bool
+	AutoDebug      int
+	UseTransaction bool // Enable FileTransaction system with automatic rollback
 }
 
 type ApplyRollbackOption string

@@ -464,6 +464,31 @@ func (tx *FileTransaction) ApplyAll() error {
 	return nil
 }
 
+// ProgressCallback is called after each operation is applied
+type ProgressCallback func(op *FileOperation, current, total int)
+
+// ApplyAllWithProgress applies all pending operations with progress callbacks
+func (tx *FileTransaction) ApplyAllWithProgress(callback ProgressCallback) error {
+	total := len(tx.Operations)
+	current := 0
+
+	for {
+		op, err := tx.ApplyNext()
+		if err != nil {
+			return fmt.Errorf("operation %d failed: %w", op.Seq, err)
+		}
+		if op == nil {
+			break // No more operations
+		}
+
+		current++
+		if callback != nil {
+			callback(op, current, total)
+		}
+	}
+	return nil
+}
+
 // applyOperation performs the actual file system operation
 func (tx *FileTransaction) applyOperation(op *FileOperation) error {
 	switch op.Type {
@@ -607,6 +632,14 @@ func (tx *FileTransaction) RollbackOnProviderFailure(failure *ProviderFailure) e
 
 	reason := fmt.Sprintf("Provider failure: %s - %s", failure.Type, failure.Message)
 	return tx.Rollback(reason)
+}
+
+// RollbackWithError performs rollback and wraps the original error
+func (tx *FileTransaction) RollbackWithError(reason string, originalErr error) error {
+	if rbErr := tx.Rollback(reason); rbErr != nil {
+		return fmt.Errorf("rollback failed (%w) after: %w", rbErr, originalErr)
+	}
+	return fmt.Errorf("rolled back due to: %w", originalErr)
 }
 
 // rollbackOperation restores a file to its original state

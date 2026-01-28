@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var autoCommit, skipCommit, autoExec bool
+var autoCommit, skipCommit, autoExec, useTransaction bool
 
 func init() {
 	initApplyFlags(applyCmd, false)
@@ -18,6 +18,7 @@ func init() {
 	RootCmd.AddCommand(applyCmd)
 
 	applyCmd.Flags().BoolVar(&fullAuto, "full", false, "Apply the plan and debug in full auto mode")
+	applyCmd.Flags().BoolVar(&useTransaction, "tx", false, "Use transactional apply with automatic rollback on failure")
 }
 
 var applyCmd = &cobra.Command{
@@ -47,12 +48,13 @@ func apply(cmd *cobra.Command, args []string) {
 	}
 
 	applyFlags := types.ApplyFlags{
-		AutoConfirm: true,
-		AutoCommit:  autoCommit,
-		NoCommit:    skipCommit,
-		AutoExec:    autoExec,
-		NoExec:      noExec,
-		AutoDebug:   autoDebug,
+		AutoConfirm:    true,
+		AutoCommit:     autoCommit,
+		NoCommit:       skipCommit,
+		AutoExec:       autoExec,
+		NoExec:         noExec,
+		AutoDebug:      autoDebug,
+		UseTransaction: useTransaction,
 	}
 
 	tellFlags := types.TellFlags{

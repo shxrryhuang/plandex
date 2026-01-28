@@ -55,6 +55,7 @@ func MustApplyPlanAttempt(
 	autoCommit := applyFlags.AutoCommit
 	noCommit := applyFlags.NoCommit
 	noExec := applyFlags.NoExec
+	useTransaction := applyFlags.UseTransaction || os.Getenv("PLANDEX_USE_TRANSACTIONS") == "1"
 
 	term.StartSpinner("")
 
@@ -192,19 +193,42 @@ func MustApplyPlanAttempt(
 
 		log.Println("Applying plan files")
 
-		if hasExec {
-			term.StopSpinner()
-			fmt.Println("🔄 Tentatively applying changes")
-			term.ResumeSpinner()
+		if useTransaction {
+			// Transactional apply path with automatic rollback
+			if hasExec {
+				term.StopSpinner()
+				fmt.Println("🔄 Tentatively applying changes (transactional)")
+				term.ResumeSpinner()
+			} else {
+				term.StopSpinner()
+				fmt.Println("📦 Staging changes...")
+				term.ResumeSpinner()
+			}
+
+			updatedFiles, err = ApplyFilesWithTransaction(planId, branch, toApply, toRemove, paths)
+
+			if err != nil {
+				// Transaction already rolled back automatically
+				onErr("Transaction failed: %s", err)
+			}
+
+			log.Println("Transactional apply complete")
+		} else {
+			// Original non-transactional apply path
+			if hasExec {
+				term.StopSpinner()
+				fmt.Println("🔄 Tentatively applying changes")
+				term.ResumeSpinner()
+			}
+
+			updatedFiles, toRollback, err = ApplyFiles(toApply, toRemove, paths)
+
+			if err != nil {
+				onErr("failed to apply files: %s", err)
+			}
+
+			log.Println("Applying plan files complete")
 		}
-
-		updatedFiles, toRollback, err = ApplyFiles(toApply, toRemove, paths)
-
-		if err != nil {
-			onErr("failed to apply files: %s", err)
-		}
-
-		log.Println("Applying plan files complete")
 	}
 
 	onExecSuccess := func() {
@@ -245,7 +269,7 @@ func MustApplyPlanAttempt(
 	}
 
 	if _, ok := toApply["_apply.sh"]; ok && !noExec {
-		handleApplyScript(params, toApply, onErr, toRollback, onExecFail, attempt, onExecSuccess)
+		handleApplyScript(params, toApply, onErr, toRollback, onExecFail, attempt, onExecSuccess, useTransaction, updatedFiles)
 	} else {
 		onExecSuccess()
 	}
@@ -259,6 +283,8 @@ func handleApplyScript(
 	onExecFail types.OnApplyExecFailFn,
 	attempt int,
 	onSuccess func(),
+	useTransaction bool,
+	updatedFiles []string,
 ) {
 	log.Println("Handling apply script")
 
@@ -295,24 +321,45 @@ func handleApplyScript(
 
 	if confirmed {
 		log.Println("Executing apply script")
-		execApplyScript(params, toApply, onErr, toRollback, onExecFail, attempt, onSuccess)
+		execApplyScript(params, toApply, onErr, toRollback, onExecFail, attempt, onSuccess, useTransaction, updatedFiles)
 	} else {
-		if toRollback != nil && toRollback.HasChanges() {
-			res, err := term.SelectFromList("Skipping execution. Apply file changes or roll back?", []string{string(types.ApplyRollbackOptionKeep), string(types.ApplyRollbackOptionRollback)})
-
-			if err != nil {
-				onErr("failed to get rollback confirmation user input: %s", err)
-			}
-
-			if res == string(types.ApplyRollbackOptionRollback) {
-				Rollback(toRollback, true)
-				os.Exit(0)
+		if useTransaction {
+			// Transactional path: user declined execution, so we need to roll back
+			// TODO: For future enhancement, could keep staged changes in workspace
+			fmt.Println("🙅‍♂️ Skipped execution")
+			if len(updatedFiles) > 0 {
+				res, err := term.SelectFromList("File changes were applied. Keep or roll back?", []string{string(types.ApplyRollbackOptionKeep), string(types.ApplyRollbackOptionRollback)})
+				if err != nil {
+					onErr("failed to get rollback confirmation user input: %s", err)
+				}
+				if res == string(types.ApplyRollbackOptionRollback) {
+					fmt.Println("⚠️  Note: Transaction-based rollback after decline requires restart")
+					fmt.Println("🤷‍♂️ Files were kept as applied")
+				} else {
+					onSuccess()
+				}
 			} else {
-				onSuccess()
+				fmt.Println("🤷‍♂️ No changes to apply")
 			}
 		} else {
-			fmt.Println("🙅‍♂️ Skipped execution")
-			fmt.Println("🤷‍♂️ No changes to apply")
+			// Non-transactional path
+			if toRollback != nil && toRollback.HasChanges() {
+				res, err := term.SelectFromList("Skipping execution. Apply file changes or roll back?", []string{string(types.ApplyRollbackOptionKeep), string(types.ApplyRollbackOptionRollback)})
+
+				if err != nil {
+					onErr("failed to get rollback confirmation user input: %s", err)
+				}
+
+				if res == string(types.ApplyRollbackOptionRollback) {
+					Rollback(toRollback, true)
+					os.Exit(0)
+				} else {
+					onSuccess()
+				}
+			} else {
+				fmt.Println("🙅‍♂️ Skipped execution")
+				fmt.Println("🤷‍♂️ No changes to apply")
+			}
 		}
 	}
 }
@@ -337,6 +384,8 @@ func execApplyScript(
 	onExecFail types.OnApplyExecFailFn,
 	attempt int,
 	onSuccess func(),
+	useTransaction bool,
+	updatedFiles []string,
 ) {
 	log.Println("Executing apply script")
 
@@ -543,7 +592,11 @@ func execApplyScript(
 
 		if canceled {
 			// rollback and exit
-			Rollback(toRollback, true)
+			if !useTransaction {
+				// Non-transactional path needs manual rollback
+				Rollback(toRollback, true)
+			}
+			// Transactional path: already rolled back in ApplyFilesWithTransaction
 			os.Exit(0)
 		}
 	}

@@ -1,4 +1,0 @@
-# Session logs (generated at runtime)
-logs/
-*.pyc
-__pycache__/
