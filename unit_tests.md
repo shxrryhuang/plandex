@@ -10,6 +10,29 @@
 
 ---
 
+## Pipeline Status — `2026-01-31` — commit `591a874f`
+
+| Module | Tests | gofmt | go vet | Overall |
+|--------|-------|-------|--------|---------|
+| `app/server` | PASS (44 executed) | FAIL | FAIL | FAIL |
+| `app/cli` | PASS (no test files) | FAIL | FAIL | FAIL |
+| `app/shared` | PASS (no test files) | PASS | PASS | PASS |
+
+**Tests:** 44 executed, 44 passed, 0 failed. 33 additional subtests silently skipped by leftover debug flags.
+
+**gofmt failures (2 files):**
+- `app/server/model/prompts/describe.go` — not formatted to `gofmt` standard
+- `app/cli/lib/log_format.go` — not formatted to `gofmt` standard
+
+**go vet failures (3 warnings):**
+- `app/server/model/plan/build_structured_edits.go:39` — `cancelBuild` not used on all paths (context leak)
+- `app/server/model/plan/build_structured_edits.go:200` — return reachable without calling `cancelBuild`
+- `app/cli/cmd/browser.go:183` — cancel function from `context.WithTimeout` discarded (context leak)
+
+> The CI workflow added in this commit will block merges on any of the above. All three issues must be resolved for the pipeline to turn green.
+
+---
+
 ## 1. Required Unit Tests
 
 ---
@@ -311,6 +334,10 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 
 ### 3a. Summary
 
+*Run: `2026-01-31` — commit `591a874f` — all three modules (`app/cli`, `app/server`, `app/shared`)*
+
+#### Unit Tests
+
 | Metric | Count |
 |--------|-------|
 | Test functions executed | 6 |
@@ -323,6 +350,23 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 | Packages with zero test files | 22 |
 
 All 44 executed tests pass. However, 33 tests are silently not running due to debug flags left in the test harness, and 22 packages have no test coverage at all. Both issues are detailed below.
+
+#### Formatting (`gofmt`)
+
+| Module | Status | Offending File |
+|--------|--------|----------------|
+| `app/server` | FAIL | `model/prompts/describe.go` |
+| `app/cli` | FAIL | `lib/log_format.go` |
+| `app/shared` | PASS | — |
+
+#### Static Analysis (`go vet`)
+
+| Module | Status | Issue |
+|--------|--------|-------|
+| `app/server` | FAIL | `model/plan/build_structured_edits.go:39` — `cancelBuild` not called on all code paths; possible context leak |
+| `app/server` | FAIL | `model/plan/build_structured_edits.go:200` — return statement reachable without using `cancelBuild` |
+| `app/cli` | FAIL | `cmd/browser.go:183` — cancel function from `context.WithTimeout` is discarded; context leak |
+| `app/shared` | PASS | — |
 
 ---
 
@@ -507,6 +551,9 @@ These are not missing features; they are tests that exist, were written, and are
 
 | Issue | Why It Is High Priority |
 |-------|--------------------------|
+| Context leak in `build_structured_edits.go:39` | `go vet` flags `cancelBuild` as not called on all paths. This is a real resource leak in the plan build loop — every uncancelled context holds open goroutines until process exit. |
+| Context leak in `browser.go:183` | `go vet` flags the cancel function from `context.WithTimeout` as discarded. The timeout context leaks on every browser automation call. |
+| `gofmt` violations in `describe.go` and `log_format.go` | These two files will block CI on every PR until formatted. Run `gofmt -w` on each to resolve. |
 | No tests for `ClassifyModelError` / `ClassifyErrMsg` | Error misclassification causes silent failures or wasteful retries across all AI providers. This function is called on every API error. |
 | No tests for `ValidateFile` | This is the only automated gate preventing syntactically broken files from being written to disk. |
 | No tests for `GetDiffs` / `GetDiffReplacements` | Diffs are the user's primary review surface before accepting changes. Incorrect diffs hide or fabricate modifications. |
@@ -536,3 +583,51 @@ These are not missing features; they are tests that exist, were written, and are
 | No tests for `model/prompts/` | Prompt content is output-dependent; unit tests provide limited signal. |
 | Missing Python and Rust structured edit tests | Covered by the generic engine; language-specific risk is lower. |
 | No tests for entry point files | Entry points contain no business logic. |
+
+---
+
+### 3e. Lint & Format Findings Detail
+
+These are the exact outputs produced by the CI pipeline steps. Each must be resolved for the workflow to pass.
+
+#### gofmt — Formatting Violations
+
+The following files are not formatted to Go standard. The CI step runs `gofmt -l .` in each module and fails if any output is produced.
+
+**`app/server/model/prompts/describe.go`**
+- File contains formatting that differs from `gofmt` output.
+- Fix: run `gofmt -w app/server/model/prompts/describe.go`
+
+**`app/cli/lib/log_format.go`**
+- File contains formatting that differs from `gofmt` output.
+- Fix: run `gofmt -w app/cli/lib/log_format.go`
+
+#### go vet — Static Analysis Warnings
+
+`go vet` performs compile-time checks for common mistakes. All three findings below are real issues, not false positives.
+
+**`app/server/model/plan/build_structured_edits.go:39`**
+```
+the cancelBuild function is not used on all paths (possible context leak)
+```
+`cancelBuild` is assigned at line 39 but a return path at line 200 can execute without calling it. The context and any goroutines it spawned remain open until garbage collection. Fix: ensure every return path calls `cancelBuild`, or use `defer cancelBuild()` immediately after assignment.
+
+**`app/server/model/plan/build_structured_edits.go:200`**
+```
+this return statement may be reached without using the cancelBuild var defined on line 39
+```
+This is the same leak, reported from the return site. Fixing line 39 resolves both.
+
+**`app/cli/cmd/browser.go:183`**
+```
+the cancel function returned by context.WithTimeout should be called, not discarded, to avoid a context leak
+```
+The cancel function from `context.WithTimeout` is not captured or called. The timeout context leaks on every invocation of this code path. Fix: capture the cancel function and `defer` it.
+
+#### Compiler Warning (non-blocking)
+
+During the server build, the `go-tree-sitter` C dependency emits:
+```
+parser.c:254:18: warning: null character(s) preserved in string literal [-Wnull-character]
+```
+This is in a vendored third-party C file (`github.com/smacker/go-tree-sitter/lua`). It does not affect correctness and is not something this repo controls. It does not fail the build or any CI step.
