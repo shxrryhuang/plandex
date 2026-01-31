@@ -1,3 +1,6 @@
+## CLI Version 2.2.2
+- Fix context leak in `browser.go` — cancel function from `context.WithTimeout` was discarded on each loop iteration; it is now captured and deferred.
+
 ## CLI Version 2.2.1
 ## 🖇️  Connect your Claude Pro or Max subscription
 

@@ -1,3 +1,9 @@
+## Server Version 2.2.2
+- Fix three bugs in the tell-stream chunk processor (`bufferOrStream`): stop-sequence detection across buffer+chunk boundary, orphaned stop-prefix buffer not flushed before tag detection, and opening-tag replacement skipped when `fileOpen` is false for tags arriving via flushed buffer.
+- Fix context leak in `buildStructuredEdits` — `cancelBuild` was not deferred, leaking the context on the auto-apply and early-error paths.
+- Add CI pipeline (gofmt, go vet, go test) across all modules.
+- Restore 33 previously-skipped stream-processor and reply-parser test cases; fix three bugs and one test typo exposed by the restored coverage.
+
 ## Server Version 2.2.1
 See CLI 2.2.1 release notes.
 
