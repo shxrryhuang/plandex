@@ -180,7 +180,8 @@ func openChromeWithLogs(urls []string) error {
 			// Create a new tab for each additional URL
 			ctx, _ = chromedp.NewContext(browserCtx)
 		}
-		tabCtx, _ := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		tabCtx, cancelTab := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		defer cancelTab()
 
 		chromedp.ListenTarget(tabCtx, func(ev interface{}) {
 			switch e := ev.(type) {

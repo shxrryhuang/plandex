@@ -10,13 +10,13 @@ import (
 var (
 	// Match the update ID and timestamp
 	updateRegex = regexp.MustCompile(`📝 Update ([a-f0-9]+)\[0;22m \| \[36m(.*?)\[0m`)
-	
+
 	// Match message number and type
 	messageRegex = regexp.MustCompile(`Message #(\d+) \| (.+?) \|`)
-	
+
 	// Match coin count
 	coinRegex = regexp.MustCompile(`(\d+) 🪙`)
-	
+
 	// Match context load summary
 	contextRegex = regexp.MustCompile(`Loaded (\d+) .+ into context`)
 )
@@ -33,13 +33,13 @@ type LogEntry struct {
 func ParseLogEntry(raw string) LogEntry {
 	lines := strings.Split(raw, "\n")
 	entry := LogEntry{}
-	
+
 	// Parse first line for update ID and timestamp
 	if matches := updateRegex.FindStringSubmatch(lines[0]); len(matches) >= 3 {
 		entry.ID = matches[1]
 		entry.Timestamp = parseTimestamp(matches[2])
 	}
-	
+
 	// Parse second line for message type and details
 	if len(lines) > 1 {
 		if matches := messageRegex.FindStringSubmatch(lines[1]); len(matches) >= 3 {
@@ -50,18 +50,18 @@ func ParseLogEntry(raw string) LogEntry {
 			entry.Message = lines[1]
 		}
 	}
-	
+
 	return entry
 }
 
 // FormatCompactSummary creates a compact one-line summary of the log entry
 func FormatCompactSummary(entry LogEntry) string {
 	var summary strings.Builder
-	
+
 	// Add timestamp
 	summary.WriteString(entry.Timestamp)
 	summary.WriteString(" | ")
-	
+
 	// Add type indicator and summary based on type
 	switch {
 	case strings.Contains(entry.Type, "User prompt"):
@@ -71,26 +71,26 @@ func FormatCompactSummary(entry LogEntry) string {
 			msg = msg[:37] + "..."
 		}
 		summary.WriteString(msg)
-		
+
 	case strings.Contains(entry.Type, "Plandex reply"):
 		summary.WriteString("🤖 AI: ")
 		if coins := coinRegex.FindStringSubmatch(entry.Message); len(coins) >= 2 {
 			summary.WriteString(coins[1] + "🪙")
 		}
-		
+
 	case strings.Contains(entry.Type, "Context Load"):
 		summary.WriteString("📚 ")
 		if matches := contextRegex.FindStringSubmatch(entry.Message); len(matches) >= 2 {
 			summary.WriteString("Loaded " + matches[1] + " items")
 		}
-		
+
 	case strings.Contains(entry.Type, "Build"):
 		summary.WriteString("🏗️ Build changes")
-		
+
 	default:
 		summary.WriteString(entry.Type)
 	}
-	
+
 	return summary.String()
 }
 

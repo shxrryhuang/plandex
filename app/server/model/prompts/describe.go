@@ -1,4 +1,3 @@
-
 package prompts
 
 import (
@@ -27,4 +26,3 @@ var DescribePlanFn = openai.FunctionDefinition{
 }
 
 const SysPendingResults = "You are an AI commit message summarizer. You take a list of descriptions of pending changes and turn them into a succinct one-line summary of all the pending changes that makes for a good commit message title. Output ONLY this one-line title and nothing else."
-
