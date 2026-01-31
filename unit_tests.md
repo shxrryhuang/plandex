@@ -10,7 +10,7 @@
 
 ---
 
-## Pipeline Status — `2026-01-31` — commit `8460af0a`
+## Pipeline Status — `2026-01-31` — commit `9cfc5710`
 
 | Module | Tests | gofmt | go vet | Overall |
 |--------|-------|-------|--------|---------|
@@ -321,13 +321,13 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 
 ## 3. Test Execution Results
 
-*Executed on 2026-01-31 against commit `e2d77207` on branch `main`.*
+*Executed on 2026-01-31 against commit `9cfc5710` on branch `main`.*
 
 ---
 
 ### 3a. Summary
 
-*Run: `2026-01-31` — commit `8460af0a` — all three modules (`app/cli`, `app/server`, `app/shared`)*
+*Run: `2026-01-31` — commit `9cfc5710` — all three modules (`app/cli`, `app/server`, `app/shared`)*
 
 #### Unit Tests
 
@@ -601,7 +601,7 @@ This is in a vendored third-party C file (`github.com/smacker/go-tree-sitter/lua
 
 ## 4. Static-Analysis Bug Report — `2026-01-31`
 
-Deep static analysis of all packages with zero test coverage surfaced the following bugs. Items marked **FIXED** were resolved in the same session. Items marked **OPEN** are awaiting follow-up.
+Deep static analysis of all packages with zero test coverage surfaced the following bugs. All items were resolved in the same session. Two items (O7 and O9) were determined to be false positives during verification and required no code change.
 
 ### 4a. Fixed Bugs
 
