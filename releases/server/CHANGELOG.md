@@ -1,3 +1,17 @@
+## Server Version 2.2.3
+- Fix division by zero in `looksTextish` — the rune loop consumed the input slice, making `len(b)` always 0 at the division; the 90 % threshold was dead code.
+- Fix missing `return` and pointer comparison in `InviteUserHandler` — the auto-add-domain guard never fired and fell through on match.
+- Fix panic in `fn(tx)` silently returning nil error in `withTx` — recovered panics were logged but the caller received a nil error, believing the transaction succeeded.
+- Fix nil user dereference in `execAuthenticate` when `GetUser` returns `(nil, nil)`.
+- Fix index out of range on `dbContexts[0]` in `RespondMissingFileHandler`.
+- Fix nil `build` dereference in `onBuildFileError` when `loadBuildFile` fails before assigning `state.build`.
+- Fix index out of range in diff hunk-header parsing on malformed `@@` lines.
+- Fix temp-directory cleanup goroutine that could be orphaned on fast exit.
+- Fix cursor leak in `ListProjectsHandler` — `rows.Close()` was missing.
+- Fix build timing not recorded on error path in `buildWholeFileFallback`.
+- Add early context-cancellation check in `execPlanBuild` before setup work begins.
+- Rename `hasDuplicates` to `noDuplicates` in `UpsertCustomModelsHandler` to match `CheckNoDuplicates` semantics.
+
 ## Server Version 2.2.2
 - Fix three bugs in the tell-stream chunk processor (`bufferOrStream`): stop-sequence detection across buffer+chunk boundary, orphaned stop-prefix buffer not flushed before tag detection, and opening-tag replacement skipped when `fileOpen` is false for tags arriving via flushed buffer.
 - Fix context leak in `buildStructuredEdits` — `cancelBuild` was not deferred, leaking the context on the auto-apply and early-error paths.

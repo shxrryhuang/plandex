@@ -1,3 +1,6 @@
+## CLI Version 2.2.3
+- Fix panic in diff UI when toggling between side-by-side and line-by-line view — routes were registered on the default `ServeMux` and duplicate patterns caused a panic on relaunch. Each listener now uses its own `ServeMux`.
+
 ## CLI Version 2.2.2
 - Fix context leak in `browser.go` — cancel function from `context.WithTimeout` was discarded on each loop iteration; it is now captured and deferred.
 
