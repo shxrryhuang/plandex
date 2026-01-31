@@ -128,7 +128,6 @@ var examples = []TestExample{
 		},
 	},
 	{
-		Only: true,
 		Operations: []shared.Operation{
 			{
 				Type: shared.OperationTypeFile,

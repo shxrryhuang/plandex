@@ -385,7 +385,6 @@ func TestBufferOrStream(t *testing.T) {
 		},
 		{
 			name: "stop tag split across two chunks (prefix + rest)",
-			only: true, // helper if you want to run just this one
 			initialState: &chunkProcessor{
 				contentBuffer: "", // begins empty
 			},
@@ -435,7 +434,7 @@ func TestBufferOrStream(t *testing.T) {
 		{
 			name: "stop prefix turns out to be different tag, falls through to other parsing logic #2",
 			initialState: &chunkProcessor{
-				contentBuffer: "something\n<Plandex",
+				contentBuffer: "something\n<Pland",
 			},
 			chunk:      "exBlock lang=\"go\" path=\"main.go\">\npackage",
 			manualStop: []string{"<PlandexFinish/>"},

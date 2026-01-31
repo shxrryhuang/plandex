@@ -185,14 +185,17 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 			}
 
 			// otherwise if the buffer plus chunk contains the stop sequence, don't stream anything and stop the stream
-			if strings.Contains(processor.contentBuffer+content, stopSequence) {
+			combined := processor.contentBuffer + content
+			if strings.Contains(combined, stopSequence) {
 				log.Printf("bufferOrStream - stop sequence found in buffer plus chunk\n")
-				split := strings.Split(content, stopSequence)
-				if len(split) > 1 {
+				idx := strings.Index(combined, stopSequence)
+				processor.contentBuffer = combined[:idx+len(stopSequence)]
+				prefix := combined[:idx]
+				if prefix != "" {
 					// we'll stream the part before the stop sequence
 					return bufferOrStreamResult{
 						shouldStream: true,
-						content:      split[0],
+						content:      prefix,
 						shouldStop:   true,
 					}
 				} else {
@@ -225,6 +228,16 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 		}
 	}
 
+	// If we had buffered content from a stop-sequence prefix check that turned out
+	// not to be a stop sequence, flush it back into content before continuing
+	if processor.contentBuffer != "" &&
+		!processor.awaitingBlockOpeningTag &&
+		!processor.awaitingBlockClosingTag &&
+		!processor.awaitingOpClosingTag &&
+		!processor.awaitingBackticks {
+		content = processor.contentBuffer + content
+		processor.contentBuffer = ""
+	}
 	// apart from manual stop sequences, no buffering in planning stages
 	if currentStage.TellStage == shared.TellStagePlanning {
 		return bufferOrStreamResult{
@@ -465,7 +478,7 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 		}
 
 		var matchedOpeningTag bool
-		if processor.fileOpen {
+		if processor.fileOpen || processor.awaitingBlockOpeningTag {
 			if verboseLogging {
 				log.Println("processor.fileOpen")
 			}
@@ -483,6 +496,7 @@ func (processor *chunkProcessor) bufferOrStream(content string, parserRes *types
 
 			if matchedOpeningTag {
 				processor.awaitingBlockOpeningTag = false
+				processor.fileOpen = true
 				content = replaced
 			}
 		}
