@@ -10,15 +10,15 @@
 
 ---
 
-## Pipeline Status — `2026-01-31` — commit `49ee57ca`
+## Pipeline Status — `2026-01-31` — commit `8460af0a`
 
 | Module | Tests | gofmt | go vet | Overall |
 |--------|-------|-------|--------|---------|
-| `app/server` | PASS (44 executed) | PASS | PASS | PASS |
+| `app/server` | PASS (77 executed) | PASS | PASS | PASS |
 | `app/cli` | PASS (no test files) | PASS | PASS | PASS |
 | `app/shared` | PASS (no test files) | PASS | PASS | PASS |
 
-**Tests:** 44 executed, 44 passed, 0 failed. 33 additional subtests silently skipped by leftover debug flags (see Section 3d — CRITICAL).
+**Tests:** 77 executed, 77 passed, 0 failed. All previously-skipped subtests are now running (debug `only`/`Only` flags removed).
 
 **gofmt:** All three modules clean.
 
@@ -327,7 +327,7 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 
 ### 3a. Summary
 
-*Run: `2026-01-31` — commit `49ee57ca` — all three modules (`app/cli`, `app/server`, `app/shared`)*
+*Run: `2026-01-31` — commit `8460af0a` — all three modules (`app/cli`, `app/server`, `app/shared`)*
 
 #### Unit Tests
 
@@ -335,14 +335,14 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 |--------|-------|
 | Test functions executed | 6 |
 | Total subtests defined in source | 77 |
-| Subtests actually executed | 44 |
-| Subtests silently skipped (leftover `only` flags) | 33 |
-| **Passed** | **44** |
+| Subtests actually executed | 77 |
+| Subtests silently skipped | 0 |
+| **Passed** | **77** |
 | **Failed** | **0** |
 | Packages with at least one test file | 5 |
 | Packages with zero test files | 22 |
 
-All 44 executed tests pass. However, 33 tests are silently not running due to debug flags left in the test harness, and 22 packages have no test coverage at all. Both issues are detailed below.
+All 77 subtests pass. The debug `only`/`Only` flags have been removed and three bugs in `bufferOrStream` (stop-sequence split, orphaned buffer flush, and opening-tag guard) have been fixed. 22 packages still have no test coverage at all (see gap analysis below).
 
 #### Formatting (`gofmt`)
 
@@ -379,37 +379,37 @@ All 44 executed tests pass. However, 33 tests are silently not running due to de
 
 ---
 
-#### TestBufferOrStream — `model/plan/` — 1 of 25 EXECUTED
+#### TestBufferOrStream — `model/plan/` — 25 of 25 PASS
 
-**Flag issue:** Test case B22 ("stop tag split across two chunks — prefix") has `only: true` set at line 389 of `tell_stream_processor_test.go`. The test harness skips all other cases when any case has this flag. This is a development-time debug artifact that was not removed before commit.
+**Fixed:** `only` flag removed. Three bugs in `bufferOrStream` fixed: (1) stop-sequence split applied to chunk instead of combined buffer+chunk; (2) orphaned stop-prefix buffer never flushed before tag detection; (3) opening-tag replacement guarded by `fileOpen` which was false for tags arriving via flushed buffer. A copy-paste typo in the #2 test case (`<Plandex` → `<Pland`) was also corrected.
 
 | Subtest | Result |
 |---------|--------|
+| streams\_regular\_content | PASS |
+| buffers\_partial\_opening\_tag | PASS |
+| converts\_opening\_tag | PASS |
+| converts\_opening\_tag\_without\_awaitingOpeningTag | PASS |
+| buffers\_partial\_backticks | PASS |
+| escapes\_backticks\_in\_content | PASS |
+| buffers\_partial\_closing\_tag | PASS |
+| buffers\_full\_closing\_tag\_with\_file\_open | PASS |
+| replaces\_full\_closing\_tag\_with\_file\_closed | PASS |
+| replaces\_full\_closing\_tag\_with\_file\_closed\_and\_awaiting\_backticks | PASS |
+| handles\_single\_backticks | PASS |
+| handles\_close\_and\_re-open\_backticks | PASS |
+| buffers\_for\_end\_of\_file\_operations | PASS |
+| replaces\_full\_end\_of\_file\_operations\_tag | PASS |
+| buffers\_for\_end\_of\_file\_operations\_with\_partial\_tag | PASS |
+| replaces\_end\_of\_file\_operation\_closing\_partial\_tag | PASS |
+| buffers\_for\_partial\_opening\_tag\_with\_no\_file\_path\_label | PASS |
+| continues\_buffering\_partial\_opening\_tag\_with\_no\_file\_path\_label | PASS |
+| replaces\_opening\_tag\_with\_no\_file\_path\_label\_when\_it\_completes | PASS |
+| replaces\_full\_opening\_tag\_without\_file\_path\_label | PASS |
+| stop\_tag\_entirely\_in\_one\_chunk | PASS |
 | stop\_tag\_split\_across\_two\_chunks\_(prefix\_+\_rest) | PASS |
-| streams\_regular\_content | SKIPPED |
-| buffers\_partial\_opening\_tag | SKIPPED |
-| converts\_opening\_tag | SKIPPED |
-| converts\_opening\_tag\_without\_awaitingOpeningTag | SKIPPED |
-| buffers\_partial\_backticks | SKIPPED |
-| escapes\_backticks\_in\_content | SKIPPED |
-| buffers\_partial\_closing\_tag | SKIPPED |
-| buffers\_full\_closing\_tag\_with\_file\_open | SKIPPED |
-| replaces\_full\_closing\_tag\_with\_file\_closed | SKIPPED |
-| replaces\_full\_closing\_tag\_with\_file\_closed\_and\_awaiting\_backticks | SKIPPED |
-| handles\_single\_backticks | SKIPPED |
-| handles\_close\_and\_re-open\_backticks | SKIPPED |
-| buffers\_for\_end\_of\_file\_operations | SKIPPED |
-| replaces\_full\_end\_of\_file\_operations\_tag | SKIPPED |
-| buffers\_for\_end\_of\_file\_operations\_with\_partial\_tag | SKIPPED |
-| replaces\_end\_of\_file\_operation\_closing\_partial\_tag | SKIPPED |
-| buffers\_for\_partial\_opening\_tag\_with\_no\_file\_path\_label | SKIPPED |
-| continues\_buffering\_partial\_opening\_tag\_with\_no\_file\_path\_label | SKIPPED |
-| replaces\_opening\_tag\_with\_no\_file\_path\_label\_when\_it\_completes | SKIPPED |
-| replaces\_full\_opening\_tag\_without\_file\_path\_label | SKIPPED |
-| stop\_tag\_entirely\_in\_one\_chunk | SKIPPED |
-| stop\_tag\_split\_across\_two\_chunks\_(completes) | SKIPPED |
-| stop\_prefix\_turns\_out\_to\_be\_different\_tag | SKIPPED |
-| stop\_prefix\_turns\_out\_to\_be\_different\_tag\_#2 | SKIPPED |
+| stop\_tag\_split\_across\_two\_chunks\_(completes) | PASS |
+| stop\_prefix\_turns\_out\_to\_be\_different\_tag | PASS |
+| stop\_prefix\_turns\_out\_to\_be\_different\_tag\_#2 | PASS |
 
 ---
 
@@ -459,22 +459,22 @@ All 44 executed tests pass. However, 33 tests are silently not running due to de
 
 ---
 
-#### TestReplyParser — `types/` — 1 of 10 EXECUTED
+#### TestReplyParser — `types/` — 10 of 10 PASS
 
-**Flag issue:** Example 10 (index 9) has `Only: true` set at line 131 of `reply_test.go`. Examples 1–9 are skipped. Same class of issue as TestBufferOrStream.
+**Fixed:** `Only` flag removed. All 10 examples now execute and pass.
 
 | Example | Result |
 |---------|--------|
+| Example\_1 | PASS |
+| Example\_2 | PASS |
+| Example\_3 | PASS |
+| Example\_4 | PASS |
+| Example\_5 | PASS |
+| Example\_6 | PASS |
+| Example\_7 | PASS |
+| Example\_8 | PASS |
+| Example\_9 | PASS |
 | Example\_10 | PASS |
-| Example\_1 | SKIPPED |
-| Example\_2 | SKIPPED |
-| Example\_3 | SKIPPED |
-| Example\_4 | SKIPPED |
-| Example\_5 | SKIPPED |
-| Example\_6 | SKIPPED |
-| Example\_7 | SKIPPED |
-| Example\_8 | SKIPPED |
-| Example\_9 | SKIPPED |
 
 ---
 
@@ -526,16 +526,14 @@ Issues are ranked by the combination of likelihood of causing a real bug and sev
 
 ---
 
-#### CRITICAL — Fix Before Any Further Commits
+#### CRITICAL — RESOLVED
 
-These are not missing features; they are tests that exist, were written, and are silently not running. A regression introduced today in these components would go undetected.
+All previously-critical issues have been fixed in commit `8460af0a`:
 
-| Issue | Location | Why It Is Critical |
-|-------|----------|---------------------|
-| `only: true` flag in TestBufferOrStream | `tell_stream_processor_test.go:389` | 24 stream-processing subtests are silently skipped. The stream processor handles every AI response chunk. Any regression is undetectable. Remove the `only` field from the test case. |
-| `Only: true` flag in TestReplyParser | `reply_test.go:131` | 9 reply-parsing examples are silently skipped. Reply parsing is what detects file operations. Remove the `Only` field from the example. |
-
-**Fix:** In both files, remove the `only`/`Only` field (or set it to `false`) from the flagged test cases. No other changes needed.
+| Issue | Resolution |
+|-------|------------|
+| `only: true` flag in TestBufferOrStream | Flag removed. Three bugs in `bufferOrStream` discovered and fixed (stop-sequence split, orphaned buffer flush, opening-tag guard). Test-case typo (`<Plandex` → `<Pland`) corrected. All 25 subtests pass. |
+| `Only: true` flag in TestReplyParser | Flag removed. All 10 examples pass. |
 
 ---
 
