@@ -1,0 +1,40 @@
+name: Go Tests, Lint & Format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [app/cli, app/server, app/shared]
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.3'
+
+      - name: Check formatting (${{ matrix.module }})
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-compliant:"
+            echo "$unformatted"
+            echo ""
+            echo "Run 'gofmt -w .' in ${{ matrix.module }} to fix."
+            exit 1
+          fi
+
+      - name: Vet (${{ matrix.module }})
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Test (${{ matrix.module }})
+        working-directory: ${{ matrix.module }}
+        run: go test ./...
