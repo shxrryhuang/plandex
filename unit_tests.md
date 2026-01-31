@@ -596,3 +596,37 @@ During the server build, the `go-tree-sitter` C dependency emits:
 parser.c:254:18: warning: null character(s) preserved in string literal [-Wnull-character]
 ```
 This is in a vendored third-party C file (`github.com/smacker/go-tree-sitter/lua`). It does not affect correctness and is not something this repo controls. It does not fail the build or any CI step.
+
+---
+
+## 4. Static-Analysis Bug Report — `2026-01-31`
+
+Deep static analysis of all packages with zero test coverage surfaced the following bugs. Items marked **FIXED** were resolved in the same session. Items marked **OPEN** are awaiting follow-up.
+
+### 4a. Fixed Bugs
+
+| # | Severity | File | Line(s) | Bug | Fix |
+|---|----------|------|---------|-----|-----|
+| 1 | CRITICAL | `app/shared/utils.go` | 171–182 | **Division by zero in `looksTextish`.** The `for len(b) > 0` loop consumes all bytes via `b = b[size:]`. After the loop `len(b)` is always 0, so `float64(printable)/float64(len(b))` yields `+Inf` (or `NaN` when `printable == 0`). The function returned `true` for any valid UTF-8 input with at least one printable rune, making the 90 % threshold entirely dead code. | Added a `total` rune counter incremented inside the loop; division now uses `total` with an explicit `total == 0` guard. |
+| 2 | CRITICAL | `app/server/handlers/invites.go` | 83–86 | **Missing `return` after `http.Error`.** When `org.AutoAddDomainUsers` matched, the handler wrote a 400 error but did not return. Execution fell through into the next block, which attempted to look up the user by email and potentially sent a second response or continued processing the invite. | Added `return` after `http.Error`. |
+| 3 | CRITICAL | `app/server/handlers/invites.go` | 83 | **Pointer comparison instead of value comparison.** `org.Domain` is `*string`; `domain` is `*string` (address of `split[1]`). The condition `org.Domain == domain` compared the two pointer addresses, which are always unequal because they point to different allocations. The domain-match guard never triggered. | Changed to `org.Domain != nil && *org.Domain == *domain`. |
+| 4 | CRITICAL | `app/server/db/transactions.go` | 33–39 | **Panic in `fn(tx)` silently returned nil error.** `recover()` caught the panic and logged it, but the function had no named return value. After the deferred recovery ran, `withTx` returned the zero value for `error` — `nil` — making the caller believe the transaction succeeded even though it was rolled back. | Changed signature to a named return `(retErr error)` and set `retErr` in the recover block before the rollback path runs. |
+| 5 | HIGH | `app/cli/cmd/diffs.go` | 119–128 | **Default `http.ServeMux` accumulation causes panic on relaunch.** `getNewListener` is called each time the user switches diff view mode. Each invocation called `http.HandleFunc` on the process-wide default mux. If the user toggled back to a previously registered format (e.g., side-by-side → line-by-line → side-by-side), Go panicked on duplicate pattern registration. | Created a per-listener `http.NewServeMux()` inside `getNewListener`; routes are registered on it instead of the default mux. |
+| 6 | HIGH | `app/server/handlers/plans_exec.go` | 406 | **Index out of range on `dbContexts[0]`.** `loadContexts` can return a non-nil response with an empty context slice in edge cases. The code checked `res == nil` but not `len(dbContexts) == 0`, so accessing index 0 panicked. | Added an explicit `len(dbContexts) == 0` guard that returns a 500 error before the index access. |
+| 7 | HIGH | `app/server/handlers/auth_helpers.go` | 498–513 | **Nil user dereference risk in `execAuthenticate`.** `db.GetUser` can return `(nil, nil)` when the user record is missing. The code checked `err != nil` but not `user == nil`. Subsequent accesses to `user.Id`, `user.Email`, etc. would panic. | Added a `user == nil` check that returns 401 Unauthorized. |
+
+### 4b. Open Items (not yet fixed)
+
+These were surfaced by static analysis across the five zero-coverage regions. They are candidates for future work.
+
+| # | Severity | File | Description |
+|---|----------|------|-------------|
+| O1 | MEDIUM | `app/server/model/plan/build_exec.go` | Goroutine spawned for build execution may outlive its parent context if the build channel is never read. |
+| O2 | MEDIUM | `app/server/model/plan/build_finish.go` | Nil pointer dereference if `activePlan` is nil in the finish callback; the nil check happens after the first field access. |
+| O3 | MEDIUM | `app/server/model/plan/build_whole_file.go` | `time.Now()` is recorded after an error path returns, so timing is recorded only on the error branch — the success branch timing is missing. |
+| O4 | MEDIUM | `app/server/db/projects.go` | `rows` from `db.Query` not closed via `defer rows.Close()` on the success path; a query error or early return leaks the cursor. |
+| O5 | MEDIUM | `app/server/diff/diff.go` | Async cleanup goroutine for temp files runs without synchronisation; if the parent exits immediately, cleanup may be skipped. |
+| O6 | MEDIUM | `app/server/diff/diff.go` | Index out of bounds in diff header parsing when a `@@` line has fewer than 4 fields. |
+| O7 | MEDIUM | `app/cli/cmd/convo.go` | Index out of range: the code accesses a slice element without verifying the slice is non-empty after a search loop that may find nothing. |
+| O8 | LOW | `app/server/handlers/models.go` | Variable `hasDuplicates` is named opposite to what `CheckNoDuplicates()` returns (true = no duplicates). Logic is accidentally correct; naming is confusing. |
+| O9 | LOW | `app/server/model/plan/build_race.go` | Logic condition checks the wrong variable in the fast-path early return, falling through to the slow path unnecessarily. |

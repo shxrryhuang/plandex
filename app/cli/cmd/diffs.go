@@ -116,15 +116,16 @@ func diffs(cmd *cobra.Command, args []string) {
 			port := listener.Addr().(*net.TCPAddr).Port
 
 			// Start web server
+			mux := http.NewServeMux()
+			mux.HandleFunc("/"+outputFormat, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				err := tmpl.Execute(w, data)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			})
 			go func() {
-				http.HandleFunc("/"+outputFormat, func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "text/html; charset=utf-8")
-					err := tmpl.Execute(w, data)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-					}
-				})
-				http.Serve(listener, nil)
+				http.Serve(listener, mux)
 			}()
 
 			ui.OpenURL("Showing "+outputFormat+" diffs in your default browser...", fmt.Sprintf("http://localhost:%d/%s", port, outputFormat))

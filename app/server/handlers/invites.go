@@ -80,9 +80,10 @@ func InviteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := &split[1]
 
-	if org.AutoAddDomainUsers && org.Domain == domain {
-		log.Printf("User already has access to org via domain: %v\n", domain)
+	if org.AutoAddDomainUsers && org.Domain != nil && *org.Domain == *domain {
+		log.Printf("User already has access to org via domain: %v\n", *domain)
 		http.Error(w, "User already has access to org via domain: "+*domain, http.StatusBadRequest)
+		return
 	}
 
 	// ensure user with this email isn't already in the org

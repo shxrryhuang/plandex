@@ -403,6 +403,12 @@ func RespondMissingFileHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if len(dbContexts) == 0 {
+			log.Println("loadContexts returned no contexts for missing file")
+			http.Error(w, "Failed to load missing file context", http.StatusInternalServerError)
+			return
+		}
+
 		dbContext := dbContexts[0]
 
 		log.Println("loaded missing file:", dbContext.FilePath)

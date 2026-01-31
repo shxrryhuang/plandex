@@ -505,6 +505,14 @@ func execAuthenticate(w http.ResponseWriter, r *http.Request, requireOrg bool, r
 		return nil
 	}
 
+	if user == nil {
+		log.Printf("user not found for auth token: %s\n", authToken.UserId)
+		if raiseErr {
+			http.Error(w, "user not found", http.StatusUnauthorized)
+		}
+		return nil
+	}
+
 	if !requireOrg {
 		return &types.ServerAuth{
 			AuthToken: authToken,

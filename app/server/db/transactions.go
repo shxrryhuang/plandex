@@ -18,7 +18,7 @@ func WithTxOpts(ctx context.Context, opts *sql.TxOptions, reason string, fn func
 	return withTx(ctx, opts, reason, fn)
 }
 
-func withTx(ctx context.Context, opts *sql.TxOptions, reason string, fn func(tx *sqlx.Tx) error) error {
+func withTx(ctx context.Context, opts *sql.TxOptions, reason string, fn func(tx *sqlx.Tx) error) (retErr error) {
 	log.Printf("starting transaction: (%s)", reason)
 
 	tx, err := Conn.BeginTxx(ctx, opts)
@@ -34,6 +34,7 @@ func withTx(ctx context.Context, opts *sql.TxOptions, reason string, fn func(tx 
 		if panicErr != nil {
 			log.Printf("panic in WithTx (%s): %v\n%s", reason, panicErr, debug.Stack())
 			log.Printf("stack trace (panic - %s):\n%s", reason, debug.Stack())
+			retErr = fmt.Errorf("panic in transaction (%s): %v", reason, panicErr)
 		}
 
 		if committed {

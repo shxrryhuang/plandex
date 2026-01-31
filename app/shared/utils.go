@@ -169,9 +169,11 @@ func looksTextish(b []byte) bool {
 	}
 
 	printable := 0
+	total := 0
 	for len(b) > 0 {
 		r, size := utf8.DecodeRune(b)
 		b = b[size:]
+		total++
 		switch {
 		case r == '\n', r == '\r', r == '\t':
 			printable++
@@ -179,5 +181,8 @@ func looksTextish(b []byte) bool {
 			printable++
 		}
 	}
-	return float64(printable)/float64(len(b)) > 0.90 // 3
+	if total == 0 {
+		return false
+	}
+	return float64(printable)/float64(total) > 0.90 // 3
 }
