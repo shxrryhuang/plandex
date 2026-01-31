@@ -58,8 +58,8 @@ func UpsertCustomModelsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hasDuplicates, errMsg := modelsInput.CheckNoDuplicates()
-	if !hasDuplicates {
+	noDuplicates, errMsg := modelsInput.CheckNoDuplicates()
+	if !noDuplicates {
 		http.Error(w, "Has duplicates: "+errMsg, http.StatusBadRequest)
 		return
 	}

@@ -304,11 +304,13 @@ func (fileState *activeBuildStreamFileState) onBuildFileError(err error) {
 		log.Printf("Error storing plan error result: %v\n", err)
 	}
 
-	build.Error = err.Error()
+	if build != nil {
+		build.Error = err.Error()
 
-	err = db.SetBuildError(build)
-	if err != nil {
-		log.Printf("Error setting build error: %v\n", err)
+		err = db.SetBuildError(build)
+		if err != nil {
+			log.Printf("Error setting build error: %v\n", err)
+		}
 	}
 }
 

@@ -155,6 +155,13 @@ func (buildState *activeBuildStreamState) execPlanBuild(activeBuild *types.Activ
 		return
 	}
 
+	select {
+	case <-activePlan.Ctx.Done():
+		log.Printf("execPlanBuild - context canceled for plan ID %s and branch %s\n", planId, branch)
+		return
+	default:
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("execPlanBuild: Panic: %v\n%s\n", r, string(debug.Stack()))

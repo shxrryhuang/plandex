@@ -114,6 +114,8 @@ func (fileState *activeBuildStreamFileState) buildWholeFileFallback(buildCtx con
 		OrgUserConfig: fileState.orgUserConfig,
 	})
 
+	fileState.builderRun.BuildWholeFileFinishedAt = time.Now()
+
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			log.Printf("buildWholeFileFallback - context canceled during model request for file %s", filePath)
@@ -124,7 +126,6 @@ func (fileState *activeBuildStreamFileState) buildWholeFileFallback(buildCtx con
 	}
 
 	fileState.builderRun.GenerationIds = append(fileState.builderRun.GenerationIds, modelRes.GenerationId)
-	fileState.builderRun.BuildWholeFileFinishedAt = time.Now()
 
 	content := modelRes.Content
 

@@ -96,6 +96,7 @@ func ListProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error listing projects: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close()
 
 	var projects []shared.Project
 

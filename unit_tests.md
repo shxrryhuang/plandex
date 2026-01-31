@@ -615,18 +615,18 @@ Deep static analysis of all packages with zero test coverage surfaced the follow
 | 6 | HIGH | `app/server/handlers/plans_exec.go` | 406 | **Index out of range on `dbContexts[0]`.** `loadContexts` can return a non-nil response with an empty context slice in edge cases. The code checked `res == nil` but not `len(dbContexts) == 0`, so accessing index 0 panicked. | Added an explicit `len(dbContexts) == 0` guard that returns a 500 error before the index access. |
 | 7 | HIGH | `app/server/handlers/auth_helpers.go` | 498–513 | **Nil user dereference risk in `execAuthenticate`.** `db.GetUser` can return `(nil, nil)` when the user record is missing. The code checked `err != nil` but not `user == nil`. Subsequent accesses to `user.Id`, `user.Email`, etc. would panic. | Added a `user == nil` check that returns 401 Unauthorized. |
 
-### 4b. Open Items (not yet fixed)
+### 4b. Previously-Open Items — Now Fixed
 
-These were surfaced by static analysis across the five zero-coverage regions. They are candidates for future work.
+All items below were resolved in the same session. O7 and O9 were determined to be false positives during verification and required no change.
 
-| # | Severity | File | Description |
-|---|----------|------|-------------|
-| O1 | MEDIUM | `app/server/model/plan/build_exec.go` | Goroutine spawned for build execution may outlive its parent context if the build channel is never read. |
-| O2 | MEDIUM | `app/server/model/plan/build_finish.go` | Nil pointer dereference if `activePlan` is nil in the finish callback; the nil check happens after the first field access. |
-| O3 | MEDIUM | `app/server/model/plan/build_whole_file.go` | `time.Now()` is recorded after an error path returns, so timing is recorded only on the error branch — the success branch timing is missing. |
-| O4 | MEDIUM | `app/server/db/projects.go` | `rows` from `db.Query` not closed via `defer rows.Close()` on the success path; a query error or early return leaks the cursor. |
-| O5 | MEDIUM | `app/server/diff/diff.go` | Async cleanup goroutine for temp files runs without synchronisation; if the parent exits immediately, cleanup may be skipped. |
-| O6 | MEDIUM | `app/server/diff/diff.go` | Index out of bounds in diff header parsing when a `@@` line has fewer than 4 fields. |
-| O7 | MEDIUM | `app/cli/cmd/convo.go` | Index out of range: the code accesses a slice element without verifying the slice is non-empty after a search loop that may find nothing. |
-| O8 | LOW | `app/server/handlers/models.go` | Variable `hasDuplicates` is named opposite to what `CheckNoDuplicates()` returns (true = no duplicates). Logic is accidentally correct; naming is confusing. |
-| O9 | LOW | `app/server/model/plan/build_race.go` | Logic condition checks the wrong variable in the fast-path early return, falling through to the slow path unnecessarily. |
+| # | Severity | File | Bug | Fix |
+|---|----------|------|-----|-----|
+| O1 | MEDIUM | `app/server/model/plan/build_exec.go` | Goroutine spawned by `execPlanBuild` proceeded through setup even when the plan context was already cancelled; the cancellation was only caught later inside model calls. | Added an early `select` on `activePlan.Ctx.Done()` right after the activePlan nil check, before any work begins. |
+| O2 | MEDIUM | `app/server/model/plan/build_finish.go` | `onBuildFileError` accessed `fileState.build` unconditionally. `loadBuildFile` sets `state.build` only on its success path (line 316); errors from `StorePlanBuild` or `ExecRepoOperation` return before that assignment, leaving `build` nil. The subsequent `build.Error = ...` panicked. | Wrapped the `build.Error` and `SetBuildError` block in an `if build != nil` guard. |
+| O3 | MEDIUM | `app/server/model/plan/build_whole_file.go` | `BuildWholeFileFinishedAt` was set at line 127, after the `if err != nil` early return. On the error path the timestamp was never recorded (unless the `AfterReq` callback ran, which is not guaranteed on all error paths). | Moved `BuildWholeFileFinishedAt = time.Now()` to immediately after `ModelRequest` returns, before the error check. Removed the now-redundant duplicate on the success path. |
+| O4 | MEDIUM | `app/server/handlers/projects.go` | `ListProjectsHandler` called `db.Conn.Query` but never closed the returned `*sql.Rows`. A scan error inside the loop caused a `return` that leaked the cursor. | Added `defer rows.Close()` immediately after the error check on `Query`. |
+| O5 | MEDIUM | `app/server/diff/diff.go` | Temp-directory cleanup was wrapped in `go os.RemoveAll(...)` inside a deferred closure. The goroutine could be orphaned if the process exited immediately after `GetDiffs` returned. | Removed the goroutine wrapper; cleanup is now a direct `defer os.RemoveAll(tempDirPath)`. |
+| O6 | MEDIUM | `app/server/diff/diff.go` | `strings.Split(line, " ")[1:]` on a `@@` hunk header produced an empty slice when the line contained no spaces after `@@`. The immediate access to `lineInfo[0]` panicked. | Added a `len(lineInfo) == 0` guard that skips the malformed header with `continue`. |
+| O7 | MEDIUM | `app/cli/cmd/convo.go` | **False positive.** The reported index access was in `convertCodeBlocks`, which uses `FindStringSubmatch` inside a `ReplaceAllStringFunc` callback. The match is guaranteed by the same regex that produced it; the submatch slice always has the expected length. No code change needed. | — |
+| O8 | LOW | `app/server/handlers/models.go` | Variable `hasDuplicates` was named the inverse of what `CheckNoDuplicates()` returns (`true` = no duplicates). The logic was accidentally correct because the negation and the wrong name cancelled each other out, but the code was misleading to any future reader. | Renamed `hasDuplicates` to `noDuplicates` so the condition `if !noDuplicates` reads as intended. |
+| O9 | LOW | `app/server/model/plan/build_race.go` | **False positive.** On re-read, every variable in the fast-path checks (`startedFallbacks`, `didCallFastApply`, channel selects) is correct and acts on the intended state. No code change needed. | — |

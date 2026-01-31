@@ -23,9 +23,7 @@ func GetDiffs(original, updated string) (string, error) {
 		return "", fmt.Errorf("error creating temp dir: %v", err)
 	}
 
-	defer func() {
-		go os.RemoveAll(tempDirPath)
-	}()
+	defer os.RemoveAll(tempDirPath)
 
 	// write the original file to the temp dir
 	err = os.WriteFile(filepath.Join(tempDirPath, "original"), []byte(original), 0644)
@@ -91,6 +89,9 @@ func GetDiffReplacements(original, updated string) ([]*shared.Replacement, error
 
 			// Parse the new hunk header
 			lineInfo := strings.Split(line, " ")[1:] // Skip @@ part
+			if len(lineInfo) == 0 {
+				continue
+			}
 			oldInfo := strings.Split(lineInfo[0], ",")
 			startLine, _ := strconv.Atoi(strings.TrimPrefix(oldInfo[0], "-"))
 
