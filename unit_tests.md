@@ -10,15 +10,15 @@
 
 ---
 
-## Pipeline Status — `2026-01-31` — commit `9cfc5710`
+## Pipeline Status — `2026-02-03` — commit `9397ef19`
 
 | Module | Tests | gofmt | go vet | Overall |
 |--------|-------|-------|--------|---------|
-| `app/server` | PASS (77 executed) | PASS | PASS | PASS |
+| `app/server` | PASS (96 executed) | PASS | PASS | PASS |
 | `app/cli` | PASS (no test files) | PASS | PASS | PASS |
 | `app/shared` | PASS (no test files) | PASS | PASS | PASS |
 
-**Tests:** 77 executed, 77 passed, 0 failed. All previously-skipped subtests are now running (debug `only`/`Only` flags removed).
+**Tests:** 96 executed, 96 passed, 0 failed.  All previously-skipped subtests are running (debug `only`/`Only` flags removed).  19 new tests were added across two packages: `diff` (14 — correctness + edge-case coverage for the pure-Go LCS diff) and `perf` (5 — unit tests for the metrics primitives).
 
 **gofmt:** All three modules clean.
 
@@ -221,19 +221,20 @@ The `ReplyParser` processes streaming AI output to detect file operations (creat
 
 ---
 
-### I. Diff Generation — `app/server/diff/` — NO TESTS EXIST
+### I. Diff Generation — `app/server/diff/`
 
-`GetDiffs` and `GetDiffReplacements` produce unified diffs by writing to temp files and invoking git. These diffs are shown to users for review before changes are applied.
+The pure-Go LCS diff path (`pureGoDiffReplacements`) now has correctness and edge-case coverage.  The original `gitDiffReplacements` fallback (used only when the trimmed middle exceeds 5 000 lines) remains untested.
 
-| # | Test | What It Validates |
-|---|------|-------------------|
-| I1 | Identical files produce empty diff | No false positives in the review surface |
-| I2 | Single line change | Correct hunk output for minimal change |
-| I3 | Multi-line addition | Hunk boundaries are correct |
-| I4 | File deletion (empty new content) | Entire file shown as removed |
-| I5 | Non-text or binary content | Does not crash |
+| # | Test | Status | What It Validates |
+|---|------|--------|-------------------|
+| I1 | Identical files produce empty diff | EXISTS | No false positives — `TestPureGoDiffEdgeCases/identical` |
+| I2 | Single line change | EXISTS | Correct hunk output — `TestPureGoDiffEdgeCases/single_line_change` |
+| I3 | Multi-line addition | EXISTS | Full-file insertion — `TestPureGoDiffEdgeCases/empty_to_content` |
+| I4 | File deletion (empty new content) | EXISTS | Full-file removal — `TestPureGoDiffEdgeCases/content_to_empty` |
+| I5 | Non-text or binary content | MISSING | The LCS path operates on string lines; binary resilience is untested |
+| I6 | Multi-size correctness | EXISTS | 9 size × density combinations — `TestPureGoDiffCorrectness` |
 
-**Why these matter:** Diffs are the primary review mechanism. Incorrect diffs hide or fabricate changes, undermining user trust in the tool.
+**Why these matter:** Diffs are the primary review mechanism. Incorrect diffs hide or fabricate changes, undermining user trust in the tool.  The pure-Go LCS path now covers the common cases; the `gitDiffReplacements` fallback (> 5 000 lines) remains untested.
 
 ---
 
@@ -303,9 +304,25 @@ The CLI retry transport uses exponential backoff with jitter for transient serve
 
 ---
 
+### N. Performance Metrics — `app/server/perf/`
+
+The `perf` package records duration histograms and monotonic counters for every hot-path operation on the server.  All five unit tests validate the core primitives independently of any HTTP endpoint.
+
+| # | Test | Status | What It Validates |
+|---|------|--------|-------------------|
+| N1 | Timer records elapsed duration | EXISTS | `Timer` closure captures start time and `Record` stores the measurement correctly |
+| N2 | Counter accumulates across calls | EXISTS | `RecordCount` uses `sync/atomic` correctly across sequential calls |
+| N3 | Percentiles computed from samples | EXISTS | p50 / p95 / p99 are sorted and indexed correctly from the raw-sample ring |
+| N4 | Report contains expected keys | EXISTS | `Report()` string includes all recorded histogram and counter keys |
+| N5 | Empty report | EXISTS | No panic or malformed output when no metrics have been recorded |
+
+**Why these matter:** The perf package is called on every plan build.  A bug in the histogram or counter primitives could silently corrupt latency data used for debugging production issues, or — in the case of the mutex or atomic operations — cause data races under concurrent load.
+
+---
+
 ## 2. CI/CD: Linting & Formatting Integration
 
-A new GitHub Actions workflow has been added at `.github/workflows/go-test-lint.yml`. It runs on every push to `main` and on every pull request targeting `main`.
+A GitHub Actions workflow at `.github/workflows/go-test-lint.yml` runs on every push to `main` and on every pull request targeting `main`.  A second workflow, `.github/workflows/perf-benchmarks.yml`, runs race detection on the `perf` and `diff` packages and enforces a benchmark regression gate on the pure-Go LCS diff (see §3 below).
 
 The workflow uses a matrix strategy to test all three Go modules (`app/cli`, `app/server`, `app/shared`) in parallel. Each module runs the following steps in order:
 
@@ -321,28 +338,28 @@ All three checks must pass for the workflow to succeed. A formatting or vet fail
 
 ## 3. Test Execution Results
 
-*Executed on 2026-01-31 against commit `9cfc5710` on branch `main`.*
+*Executed on 2026-02-03 against commit `9397ef19` on branch `main`.*
 
 ---
 
 ### 3a. Summary
 
-*Run: `2026-01-31` — commit `9cfc5710` — all three modules (`app/cli`, `app/server`, `app/shared`)*
+*Run: `2026-02-03` — commit `9397ef19` — all three modules (`app/cli`, `app/server`, `app/shared`)*
 
 #### Unit Tests
 
 | Metric | Count |
 |--------|-------|
-| Test functions executed | 6 |
-| Total subtests defined in source | 77 |
-| Subtests actually executed | 77 |
+| Test functions executed | 13 |
+| Total subtests / tests defined in source | 96 |
+| Subtests actually executed | 96 |
 | Subtests silently skipped | 0 |
-| **Passed** | **77** |
+| **Passed** | **96** |
 | **Failed** | **0** |
-| Packages with at least one test file | 5 |
-| Packages with zero test files | 22 |
+| Packages with at least one test file | 7 |
+| Packages with zero test files | 21 |
 
-All 77 subtests pass. The debug `only`/`Only` flags have been removed and three bugs in `bufferOrStream` (stop-sequence split, orphaned buffer flush, and opening-tag guard) have been fixed. 22 packages still have no test coverage at all (see gap analysis below).
+All 96 subtests / tests pass.  The debug `only`/`Only` flags have been removed and three bugs in `bufferOrStream` have been fixed (stop-sequence split, orphaned buffer flush, opening-tag guard).  19 new tests were added: 14 in `diff` (correctness + edge cases for the pure-Go LCS diff) and 5 in `perf` (metrics primitives).  21 packages still have no test coverage at all (see gap analysis below).
 
 #### Formatting (`gofmt`)
 
@@ -489,14 +506,55 @@ All 77 subtests pass. The debug `only`/`Only` flags have been removed and three 
 
 ---
 
+#### TestPureGoDiffCorrectness — `diff/` — 9 of 9 PASS
+
+Verifies that applying the pure-Go LCS replacements serially to the original text reproduces the updated text exactly.  Each subtest mutates a different combination of file size and mutation density.
+
+| Subtest | Result |
+|---------|--------|
+| lines=20\_mutEvery=5 | PASS |
+| lines=20\_mutEvery=10 | PASS |
+| lines=20\_mutEvery=20 | PASS |
+| lines=100\_mutEvery=5 | PASS |
+| lines=100\_mutEvery=10 | PASS |
+| lines=100\_mutEvery=20 | PASS |
+| lines=500\_mutEvery=5 | PASS |
+| lines=500\_mutEvery=10 | PASS |
+| lines=500\_mutEvery=20 | PASS |
+
+---
+
+#### TestPureGoDiffEdgeCases — `diff/` — 5 of 5 PASS
+
+| Subtest | Result |
+|---------|--------|
+| identical | PASS |
+| empty\_to\_content | PASS |
+| content\_to\_empty | PASS |
+| single\_line\_change | PASS |
+| append\_line | PASS |
+
+---
+
+#### perf package — `perf/` — 5 of 5 PASS
+
+| Test | Result |
+|------|--------|
+| TestTimerRecordsElapsed | PASS |
+| TestRecordCountAccumulates | PASS |
+| TestMultipleSamplesPercentiles | PASS |
+| TestReportContainsKeys | PASS |
+| TestEmptyReport | PASS |
+
+---
+
 ### 3c. Packages with Zero Test Coverage
 
-These 22 packages contain no `_test.go` files and are entirely unvalidated:
+These 21 packages contain no `_test.go` files and are entirely unvalidated:
 
 | Package | Risk | Key Untested Logic |
 |---------|------|--------------------|
 | `db` | HIGH | All database helpers, lock acquisition/release, transaction rollback, operation queue |
-| `diff` | HIGH | Diff generation and hunk parsing shown to users |
 | `handlers` | HIGH | All HTTP endpoint request/response logic |
 | `model` | HIGH | Client factory, error classification, token estimation, summarization |
 | `cli/api` | HIGH | HTTP retry transport, all 80+ API method calls |
@@ -537,13 +595,20 @@ All previously-critical issues have been fixed in commit `8460af0a`:
 
 ---
 
+#### HIGH — RESOLVED
+
+| Issue | Resolution |
+|-------|------------|
+| No tests for `GetDiffReplacements` | 14 tests added in `diff_bench_test.go`: `TestPureGoDiffCorrectness` (9 subtests across size × density) and `TestPureGoDiffEdgeCases` (5 subtests).  The `gitDiffReplacements` fallback (> 5 000 lines) remains untested. |
+
+---
+
 #### HIGH — Address Before Next Release
 
 | Issue | Why It Is High Priority |
 |-------|--------------------------|
 | No tests for `ClassifyModelError` / `ClassifyErrMsg` | Error misclassification causes silent failures or wasteful retries across all AI providers. This function is called on every API error. |
 | No tests for `ValidateFile` | This is the only automated gate preventing syntactically broken files from being written to disk. |
-| No tests for `GetDiffs` / `GetDiffReplacements` | Diffs are the user's primary review surface before accepting changes. Incorrect diffs hide or fabricate modifications. |
 | No tests for CLI retry transport | Retry behavior determines whether transient errors are invisible or user-visible. The backoff logic has no coverage. |
 | No tests for `ParseRemoveSubtasks` | File deletion is irreversible. Zero test coverage on the parsing that triggers it. |
 
@@ -579,15 +644,18 @@ These are the exact outputs produced by the CI pipeline steps. Each must be reso
 
 #### gofmt — Formatting
 
-All modules pass. Previously flagged files were resolved in commit `49ee57ca`:
-- `app/server/model/prompts/describe.go` — removed leading and trailing blank lines.
-- `app/cli/lib/log_format.go` — replaced blank lines containing trailing tabs with truly empty lines.
+All modules pass. Flagged files have been resolved across multiple commits:
+- `app/server/model/prompts/describe.go` — removed leading and trailing blank lines (commit `49ee57ca`).
+- `app/cli/lib/log_format.go` — replaced blank lines containing trailing tabs with truly empty lines (commit `49ee57ca`).
+- `app/server/diff/diff.go` — removed extra space in `editEqual  editKind = iota` const declaration (commit `baa4dd81`).
+- `app/server/perf/metrics.go` — re-aligned `Cat*` category constants to longest identifier `CatProviderCall` (commit `baa4dd81`).
 
 #### go vet — Static Analysis
 
-All modules pass. Previously flagged context leaks were resolved in commit `49ee57ca`:
-- `app/server/model/plan/build_structured_edits.go` — added `defer cancelBuild()` immediately after `context.WithCancel`. The cancel was previously only reachable through the `buildRace` path; the `autoApplyIsValid` path and the error return at line 200 both leaked the context.
-- `app/cli/cmd/browser.go` — captured the cancel function from `context.WithTimeout` (was discarded with `_`) and deferred it.
+All modules pass. Flagged context leaks have been resolved across multiple commits:
+- `app/server/model/plan/build_structured_edits.go` — added `defer cancelBuild()` immediately after `context.WithCancel`. The cancel was previously only reachable through the `buildRace` path; the `autoApplyIsValid` path and the error return at line 200 both leaked the context (commit `49ee57ca`).
+- `app/cli/cmd/browser.go` — captured the cancel function from `context.WithTimeout` (was discarded with `_`) and deferred it (commit `49ee57ca`).
+- `app/cli/lib/apply_cgroup_linux.go` — captured the cancel function from `context.WithTimeout` in `MaybeIsolateCgroup` (was discarded with `_`) and deferred it (commit `aeb486b1`). Build-tagged `//go:build linux`; verified with `GOOS=linux go vet ./...`.
 
 #### Compiler Warning (non-blocking)
 

@@ -1,3 +1,6 @@
+## CLI Version 2.2.4
+- Fix context leak in `MaybeIsolateCgroup` (`lib/apply_cgroup_linux.go`) — cancel function from `context.WithTimeout` was discarded; now captured and deferred.
+
 ## CLI Version 2.2.3
 - Fix panic in diff UI when toggling between side-by-side and line-by-line view — routes were registered on the default `ServeMux` and duplicate patterns caused a panic on relaunch. Each listener now uses its own `ServeMux`.
 

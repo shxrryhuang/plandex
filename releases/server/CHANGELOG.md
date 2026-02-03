@@ -1,3 +1,10 @@
+## Server Version 2.2.4
+- Replace per-file `git diff --no-index` subprocess with in-process LCS diff (872× speedup on small files, 20× on medium).
+- Add `perf` metrics package with duration histograms (p50/p95/p99), atomic counters, and a `GET /perf/metrics` endpoint (development-only).
+- Remove `spew.Dump` / `spew.Sdump` from all model-request hot paths; replaced with targeted `log.Printf`.
+- Fix `git status --porcelain` missing `-C dir` in `GitClearUncommittedChanges` — was checking CWD instead of plan directory.
+- Add CI benchmark regression gate (`perf-benchmarks.yml`): race-detect + benchmark + ≥ 10× speedup gate on Small + PR comment.
+
 ## Server Version 2.2.3
 - Fix division by zero in `looksTextish` — the rune loop consumed the input slice, making `len(b)` always 0 at the division; the 90 % threshold was dead code.
 - Fix missing `return` and pointer comparison in `InviteUserHandler` — the auto-add-domain guard never fired and fell through on match.

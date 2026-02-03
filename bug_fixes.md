@@ -100,18 +100,26 @@ Every row in the table below conforms to the following fields.
 | BF-022 | MEDIUM | index-oob | static-analysis | server | `app/server/diff/diff.go` | `GetDiffReplacements` | 93 | `strings.Split(line, " ")[1:]` on a `@@` hunk header with no trailing fields produced an empty slice. The immediate access to `lineInfo[0]` panicked. | Added a `len(lineInfo) == 0` guard that skips the malformed header with `continue`. |
 | BF-023 | LOW | naming | static-analysis | server | `app/server/handlers/models.go` | `UpsertCustomModelsHandler` | 61–64 | `hasDuplicates` was named the exact inverse of what `CheckNoDuplicates()` returns (`true` = no duplicates). The logic was accidentally correct because the negation and the wrong name cancelled each other out, but the code was misleading. | Renamed to `noDuplicates` so `if !noDuplicates` reads as intended. |
 
+### Group F — CI-pipeline fixes (`baa4dd81`, `aeb486b1`)
+
+| id | severity | bug_class | detected_by | module | file | function | line | description | fix |
+|----|----------|-----------|-------------|--------|------|----------|------|-------------|-----|
+| BF-024 | LOW | context-leak | go-vet | cli | `app/cli/lib/apply_cgroup_linux.go` | `MaybeIsolateCgroup` | 25 | `context.WithTimeout` returned a cancel function that was discarded with `_`. The context leaked until the 1-second timer fired on every invocation. (`go vet -lostcancel`) | Captured the cancel function and added `defer cancel()` immediately after the `WithTimeout` call. |
+| BF-025 | LOW | formatting | gofmt | server | `app/server/diff/diff.go` | — | const block | `editEqual  editKind = iota` had a double space between the identifier and its type, making the file non-canonical per `gofmt`. | Removed the extra space. |
+| BF-026 | LOW | formatting | gofmt | server | `app/server/perf/metrics.go` | — | const block | The nine `Cat*` category constants were not column-aligned to the longest identifier (`CatProviderCall`). `gofmt` requires alignment when constants share an `=` column. | Re-aligned all constants to `CatProviderCall` width. |
+
 ---
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total fixes | 23 |
+| Total fixes | 26 |
 | CRITICAL | 4 |
 | HIGH | 7 |
 | MEDIUM | 8 |
-| LOW | 4 |
-| Commits | 4 (`49ee57ca`, `8460af0a`, `1cc6c4d6`, `6f5db915`) |
+| LOW | 7 |
+| Commits | 6 (`49ee57ca`, `8460af0a`, `1cc6c4d6`, `6f5db915`, `baa4dd81`, `aeb486b1`) |
 | Modules touched | 3 (`server`, `cli`, `shared`) |
 | Unique `bug_class` values used | 11 of 13 |
 | False positives identified | 2 (O7 `convo.go`, O9 `build_race.go`) |
