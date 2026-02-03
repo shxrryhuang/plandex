@@ -17,15 +17,15 @@ import (
 
 // Well-known category constants used throughout the server.
 const (
-	CatFileIO      = "file_io"
-	CatGitOps      = "git_ops"
+	CatFileIO       = "file_io"
+	CatGitOps       = "git_ops"
 	CatProviderCall = "provider_call"
-	CatPatchApply  = "patch_apply"
-	CatStream      = "stream"
-	CatLock        = "lock"
-	CatDiff        = "diff"
-	CatTellExec    = "tell_exec"
-	CatBuildExec   = "build_exec"
+	CatPatchApply   = "patch_apply"
+	CatStream       = "stream"
+	CatLock         = "lock"
+	CatDiff         = "diff"
+	CatTellExec     = "tell_exec"
+	CatBuildExec    = "build_exec"
 )
 
 // maxSamples is how many raw durations we keep per histogram for

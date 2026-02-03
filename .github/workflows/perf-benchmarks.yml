@@ -76,7 +76,7 @@ jobs:
 
       # ── 2. Artifact (90-day retention for trend graphs) ──────────
       - name: Upload benchmark artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: diff-benchmarks-${{ github.sha }}
           path: bench.txt

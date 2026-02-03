@@ -34,7 +34,7 @@ var errTooLargeForPureGo = fmt.Errorf("middle section exceeds %d lines per side"
 type editKind int
 
 const (
-	editEqual  editKind = iota
+	editEqual editKind = iota
 	editDelete
 	editInsert
 )
