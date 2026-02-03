@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"plandex-server/perf"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -65,6 +66,8 @@ func getGitRepo(orgId, planId string) *GitRepo {
 }
 
 func (repo *GitRepo) GitAddAndCommit(branch, message string) error {
+	done := perf.Timer(perf.CatGitOps, "add_and_commit")
+	defer done()
 	log.Printf("[Git] GitAddAndCommit - orgId: %s, planId: %s, branch: %s, message: %s", repo.orgId, repo.planId, branch, message)
 	orgId := repo.orgId
 	planId := repo.planId
@@ -340,7 +343,7 @@ func (repo *GitRepo) GitClearUncommittedChanges(branch string) error {
 
 	// first do a lightweight git status to check if there are any uncommitted changes
 	// prevents heavier operations below if there are no changes (the usual case)
-	res, err := exec.Command("git", "status", "--porcelain").CombinedOutput()
+	res, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("error checking for uncommitted changes: %v, output: %s", err, string(res))
 	}

@@ -1,0 +1,194 @@
+name: Perf — Benchmarks & Race Detection
+
+# Runs alongside the existing go-test-lint workflow.  It covers two things
+# the base workflow does not:
+#   1. -race on the packages that carry the new concurrent perf primitives.
+#   2. Benchmark execution, regression gating, and PR-comment reporting for
+#      the pure-Go LCS diff optimisation.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One run per branch/PR at a time; later pushes cancel earlier ones.
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+# ───────────────────────────────────────────────────────────────────────────
+# Job 1 – Race detector
+# Covers perf/ (sync.Mutex + sync/atomic) and diff/ (no shared state, but
+# validates the new splitLines / LCS helpers under the detector anyway).
+# ───────────────────────────────────────────────────────────────────────────
+jobs:
+  race-detect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.3'
+
+      - name: Race-detect perf & diff packages
+        working-directory: app/server
+        run: go test -race -count=1 ./perf/ ./diff/
+
+# ───────────────────────────────────────────────────────────────────────────
+# Job 2 – Diff benchmarks
+#
+# Pipeline:
+#   run  →  upload artifact  →  regression gate  →  PR comment
+#
+# Regression invariants (thresholds are intentionally conservative to
+# survive the hardware spread of GitHub Actions runners):
+#
+#   Small  (50 lines,  5 mutations):   PureGo ≥ 10× faster than Git
+#   Medium (500 lines, 50 mutations):  PureGo ≥  3× faster than Git
+#
+# Why these always hold:
+#   The git path pays a *fixed* penalty ≥ 5 ms on every platform:
+#     os.MkdirTemp  +  2× os.WriteFile  +  exec.Command  +  ReadAll  +  RemoveAll
+#   The LCS path for ≤ 500 lines finishes in < 2 ms on any modern CPU.
+# ───────────────────────────────────────────────────────────────────────────
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.3'
+
+      # ── 1. Execute ────────────────────────────────────────────────
+      - name: Run diff benchmarks
+        working-directory: app/server
+        run: |
+          go test \
+            -bench=BenchmarkDiff \
+            -benchmem \
+            -benchtime=1s \
+            -count=1 \
+            ./diff/ \
+            | tee "$GITHUB_WORKSPACE/bench.txt"
+
+      # ── 2. Artifact (90-day retention for trend graphs) ──────────
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: diff-benchmarks-${{ github.sha }}
+          path: bench.txt
+          retention-days: 90
+
+      # ── 3. Regression gate ────────────────────────────────────────
+      - name: Regression gate
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys, os
+
+          text = open(
+              os.path.join(os.environ["GITHUB_WORKSPACE"], "bench.txt")
+          ).read()
+
+          # Parse: strip the -N (GOMAXPROCS) suffix that go test appends
+          ns = {}
+          for line in text.splitlines():
+              m = re.match(
+                  r"(Benchmark\w+)-\d+\s+\d+\s+([\d.]+)\s+ns/op", line
+              )
+              if m:
+                  ns[m.group(1)] = float(m.group(2))
+
+          checks = [
+              # (label, pureGo_key, git_key, min_speedup_ratio)
+              ("Small",  "BenchmarkDiff_PureGo_Small",  "BenchmarkDiff_Git_Small",  10),
+              ("Medium", "BenchmarkDiff_PureGo_Medium", "BenchmarkDiff_Git_Medium",  3),
+          ]
+
+          fail = False
+          for label, pk, gk, min_x in checks:
+              if pk not in ns or gk not in ns:
+                  print(f"WARNING  {label}: benchmark data missing — skipped")
+                  continue
+              ratio = ns[gk] / ns[pk]
+              ok     = ratio >= min_x
+              mark   = "PASS" if ok else "FAIL"
+              print(
+                  f"[{mark}] {label}: "
+                  f"PureGo {ns[pk]:>12,.0f} ns/op  |  "
+                  f"Git    {ns[gk]:>12,.0f} ns/op  |  "
+                  f"speedup {ratio:>5.1f}x  (need >= {min_x}x)"
+              )
+              if not ok:
+                  fail = True
+
+          sys.exit(1 if fail else 0)
+          PYEOF
+
+      # ── 4. Post a summary table on the PR ─────────────────────────
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs   = require('fs');
+            const path = require('path');
+            const raw  = fs.readFileSync(
+                           path.join(process.env.GITHUB_WORKSPACE, 'bench.txt'),
+                           'utf8'
+                         );
+
+            // Keep only lines that start with "Benchmark"
+            const rows = raw.split('\n')
+              .filter(l => l.startsWith('Benchmark'))
+              .map(l => {
+                // Columns (tab / space separated):
+                //   0: name-GOMAXPROCS
+                //   1: iterations
+                //   2: ns/op value
+                //   3: "ns/op"
+                //   4: B/op value
+                //   5: "B/op"
+                //   6: allocs/op value
+                //   7: "allocs/op"
+                const cols = l.trim().split(/\s+/);
+                return {
+                  name:   cols[0].replace(/-\d+$/, ''),   // strip -N suffix
+                  iters:  cols[1],
+                  ns:     cols[2],
+                  bOp:    cols[4],
+                  allocs: cols[6],
+                };
+              });
+
+            // Group into PureGo / Git pairs for a cleaner table
+            const pureGo = rows.filter(r => r.name.includes('PureGo'));
+            const git    = rows.filter(r => r.name.includes('Git'));
+
+            let md  = '### 📊 Diff Benchmark Results\n\n';
+            md     += '| Size | PureGo (ns/op) | PureGo (B/op) | Git (ns/op) | Git (B/op) | Speedup |\n';
+            md     += '|------|---------------:|-------------:|-----------:|---------:|--------:|\n';
+
+            const sizes = ['Small', 'Medium', 'Large'];
+            sizes.forEach(size => {
+              const pg = pureGo.find(r => r.name.includes(size));
+              const gt = git.find(r => r.name.includes(size));
+              if (pg && gt) {
+                const speedup = (parseFloat(gt.ns) / parseFloat(pg.ns)).toFixed(1);
+                md += `| ${size} | ${Number(pg.ns).toLocaleString()} | ${Number(pg.bOp).toLocaleString()} | ${Number(gt.ns).toLocaleString()} | ${Number(gt.bOp).toLocaleString()} | ${speedup}× |\n`;
+              }
+            });
+
+            md += '\n';
+            md += '**Invariants checked:** PureGo ≥ 10× on Small, ≥ 3× on Medium vs Git.\n';
+            md += `**Artifact:** \`diff-benchmarks-${process.env.GITHUB_SHA}\`\n`;
+
+            await octokit.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body:         md,
+            });

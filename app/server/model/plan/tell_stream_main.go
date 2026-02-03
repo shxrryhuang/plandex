@@ -14,7 +14,7 @@ import (
 
 	shared "plandex-shared"
 
-	"github.com/davecgh/go-spew/spew"
+	"plandex-server/perf"
 )
 
 func (state *activeTellStreamState) listenStream(stream *model.ExtendedChatCompletionStream) {
@@ -30,6 +30,9 @@ func (state *activeTellStreamState) listenStream(stream *model.ExtendedChatCompl
 		log.Printf("listenStream - Active plan not found for plan ID %s on branch %s\n", planId, branch)
 		return
 	}
+
+	perfDone := perf.Timer(perf.CatStream, "listen_total")
+	defer perfDone()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -157,10 +160,11 @@ mainLoop:
 
 			if state.firstTokenAt.IsZero() {
 				state.firstTokenAt = time.Now()
+				perf.Record(perf.CatStream, "time_to_first_token", time.Since(state.requestStartedAt))
 			}
 
 			if response.Error != nil {
-				log.Println("listenStream - stream finished with error", spew.Sdump(response.Error))
+				log.Printf("listenStream - stream finished with error: code=%v msg=%q\n", response.Error.Code, response.Error.Message)
 
 				baseModelConfig := state.fallbackRes.BaseModelConfig
 				modelErr := model.ClassifyModelError(response.Error.Code, response.Error.Message, nil, baseModelConfig.HasClaudeMaxAuth)
@@ -185,7 +189,7 @@ mainLoop:
 					return
 				}
 
-				log.Println("listenStream - stream finished with no choices", spew.Sdump(response))
+				log.Printf("listenStream - stream finished with no choices: id=%s\n", response.ID)
 
 				// Previously we'd return an error if there were no choices, but some models do this and then keep streaming, so we'll just log it and continue, waiting for an EOF if there's a problem
 				// res := state.onError(onErrorParams{

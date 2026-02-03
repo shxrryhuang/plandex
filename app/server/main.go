@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http/pprof"
 	"os"
 	"plandex-server/model"
 	"plandex-server/routes"
@@ -28,6 +29,15 @@ func main() {
 	})
 
 	r := mux.NewRouter()
+
+	if os.Getenv("GOENV") != "production" {
+		r.HandleFunc("/debug/pprof/", pprof.Index)
+		r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
+
 	routes.AddHealthRoutes(r)
 	routes.AddApiRoutes(r)
 	routes.AddProxyableApiRoutes(r)

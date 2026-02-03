@@ -18,7 +18,8 @@ import (
 
 	shared "plandex-shared"
 
-	"github.com/davecgh/go-spew/spew"
+	"plandex-server/perf"
+
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -198,15 +199,8 @@ func CreateChatCompletionStream(
 
 		modelConfig = resolvedModelConfig
 
-		log.Println("createChatCompletionStreamExtended - modelConfig")
-		spew.Dump(map[string]interface{}{
-			"modelConfig.ModelId":      baseModelConfig.ModelId,
-			"modelConfig.ModelTag":     baseModelConfig.ModelTag,
-			"modelConfig.ModelName":    baseModelConfig.ModelName,
-			"modelConfig.Provider":     baseModelConfig.Provider,
-			"modelConfig.BaseUrl":      baseModelConfig.BaseUrl,
-			"modelConfig.ApiKeyEnvVar": baseModelConfig.ApiKeyEnvVar,
-		})
+		log.Printf("createChatCompletionStreamExtended - modelConfig: id=%s tag=%s name=%s provider=%s baseUrl=%s apiKeyEnvVar=%s",
+			baseModelConfig.ModelId, baseModelConfig.ModelTag, baseModelConfig.ModelName, baseModelConfig.Provider, baseModelConfig.BaseUrl, baseModelConfig.ApiKeyEnvVar)
 
 		resp, err := createChatCompletionStreamExtended(resolvedModelConfig, opClient, authVars, settings, orgUserConfig, ctx, req)
 		return resp, fallbackRes, err
@@ -358,7 +352,9 @@ func createChatCompletionStreamExtended(
 	addOpenRouterHeaders(req)
 
 	// Send the request
+	perfDone := perf.Timer(perf.CatProviderCall, "http_request")
 	resp, err := httpClient.Do(req) //nolint:bodyclose // body is closed in stream.Close()
+	perfDone()
 	if err != nil {
 		return nil, fmt.Errorf("error making request: %w", err)
 	}

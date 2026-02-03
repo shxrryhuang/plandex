@@ -7,6 +7,7 @@ import (
 	"plandex-server/db"
 	diff_pkg "plandex-server/diff"
 	"plandex-server/hooks"
+	"plandex-server/perf"
 	"plandex-server/syntax"
 	"plandex-server/utils"
 	"runtime"
@@ -105,6 +106,7 @@ func (fileState *activeBuildStreamFileState) buildStructuredEdits() {
 	log.Printf("buildStructuredEdits - %s - applying changes\n", filePath)
 	// Apply plan logic
 	log.Printf("buildStructuredEdits - %s - calling ApplyChanges\n", filePath)
+	applyDone := perf.Timer(perf.CatPatchApply, "apply_changes")
 	autoApplyRes = syntax.ApplyChanges(
 		buildCtx,
 		syntax.ApplyChangesParams{
@@ -116,6 +118,7 @@ func (fileState *activeBuildStreamFileState) buildStructuredEdits() {
 			Language:               fileState.language,
 		},
 	)
+	applyDone()
 	log.Printf("buildStructuredEdits - %s - got ApplyChanges result\n", filePath)
 	// log.Printf("buildStructuredEdits - autoApplyRes.NewFile:\n\n%s", autoApplyRes.NewFile)
 	log.Println("buildStructuredEdits - autoApplyRes.NeedsVerifyReasons:", autoApplyRes.NeedsVerifyReasons)
@@ -194,7 +197,9 @@ func (fileState *activeBuildStreamFileState) buildStructuredEdits() {
 	updated = utils.StripAddedBlankLines(originalFile, updated)
 
 	log.Printf("buildStructuredEdits - %s - getting diff replacements\n", filePath)
+	diffDone := perf.Timer(perf.CatPatchApply, "get_diff_replacements")
 	replacements, err := diff_pkg.GetDiffReplacements(originalFile, updated)
+	diffDone()
 	if err != nil {
 		log.Printf("buildStructuredEdits - error getting diff replacements: %v\n", err)
 		fileState.onBuildFileError(fmt.Errorf("error getting diff replacements: %v", err))

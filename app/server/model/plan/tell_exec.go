@@ -15,7 +15,8 @@ import (
 
 	shared "plandex-shared"
 
-	"github.com/davecgh/go-spew/spew"
+	"plandex-server/perf"
+
 	"github.com/google/uuid"
 	"github.com/sashabaranov/go-openai"
 )
@@ -453,13 +454,8 @@ func execTellPlan(params execTellPlanParams) {
 		}
 	}
 
-	log.Println("tell exec - will send model request with:", spew.Sdump(map[string]interface{}{
-		"provider":  baseModelConfig.Provider,
-		"modelId":   baseModelConfig.ModelId,
-		"modelTag":  baseModelConfig.ModelTag,
-		"modelName": baseModelConfig.ModelName,
-		"tokens":    requestTokens,
-	}))
+	log.Printf("tell exec - will send model request: provider=%s modelId=%s modelTag=%s modelName=%s tokens=%d",
+		baseModelConfig.Provider, baseModelConfig.ModelId, baseModelConfig.ModelTag, baseModelConfig.ModelName, requestTokens)
 
 	_, apiErr := hooks.ExecHook(hooks.WillSendModelRequest, hooks.HookParams{
 		Auth: auth,
@@ -492,6 +488,8 @@ func execTellPlan(params execTellPlanParams) {
 }
 
 func (state *activeTellStreamState) doTellRequest() {
+	done := perf.Timer(perf.CatTellExec, "do_tell_request")
+	defer done()
 	clients := state.clients
 	authVars := state.authVars
 	modelConfig := state.modelConfig
@@ -510,11 +508,8 @@ func (state *activeTellStreamState) doTellRequest() {
 	// log.Println("Stop:", stop)
 	// spew.Dump(state.messages)
 
-	log.Println("modelConfig:", spew.Sdump(map[string]interface{}{
-		"modelName": baseModelConfig.ModelName,
-		"modelId":   baseModelConfig.ModelId,
-		"modelTag":  baseModelConfig.ModelTag,
-	}))
+	log.Printf("doTellRequest - modelConfig: modelName=%s modelId=%s modelTag=%s",
+		baseModelConfig.ModelName, baseModelConfig.ModelId, baseModelConfig.ModelTag)
 
 	if state.noCacheSupportErr {
 		log.Println("Tell exec - request failed with cache support error. Removing cache control breakpoints from messages.")
