@@ -15,3 +15,7 @@ When [self-hosting](./hosting/self-hosting/local-mode-quickstart.md) or using [P
 It's also up to you to manage your API keys securely. Try to avoid storing them in multiple places, exposing them to third party services, or sending them around in plain text.
 
 You may also want to consider using Plandex Cloud in [Integrated Models Mode](./hosting/cloud.md#integrated-models-mode), which lets you skip dealing with API keys at all.
+
+## Debug Endpoints
+
+In development and self-hosted (non-production) mode the server registers `/debug/pprof/*` (Go runtime profiler) and `GET /perf/metrics` (application-level latency histograms).  Both sets of endpoints are **disabled in production** (`GOENV=production`): the `pprof` handlers are never registered, and `/perf/metrics` returns 403.  Self-hosted operators running in production mode do not need to firewall these paths; they are not reachable.
