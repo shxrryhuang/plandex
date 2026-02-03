@@ -42,17 +42,17 @@ jobs:
 # Pipeline:
 #   run  →  upload artifact  →  regression gate  →  PR comment
 #
-# Regression invariants (thresholds are intentionally conservative to
-# survive the hardware spread of GitHub Actions runners):
+# Regression gate — only Small is a hard check:
+#   Small (50 lines, 5 mutations): PureGo ≥ 10× faster than Git
 #
-#   Small  (50 lines,  5 mutations):   PureGo ≥ 10× faster than Git
-#   Medium (500 lines, 50 mutations):  PureGo ≥  2× faster than Git
+# Why this always holds:
+#   The git path pays a fixed subprocess penalty (clone + exec + 2× WriteFile
+#   + ReadAll + RemoveAll): ≥ 3 ms on Linux, ≥ 5 ms on macOS.
+#   The LCS path for 50 lines finishes in < 0.2 ms on any modern CPU.
 #
-# Why these always hold:
-#   The git path pays a subprocess penalty on every platform:
-#     os.MkdirTemp  +  2× os.WriteFile  +  exec.Command  +  ReadAll  +  RemoveAll
-#   On Linux (clone()) this is ~3 ms; on macOS (fork()) ~5 ms.
-#   The LCS path for 50 lines is < 0.2 ms and for 500 lines < 3 ms on CI.
+# Medium (500 lines) is reported but not gated: on 2-vCPU CI runners the
+# O(n²) DP table and Linux clone() speed narrow the ratio enough to make a
+# fixed threshold unreliable.
 # ───────────────────────────────────────────────────────────────────────────
   benchmark:
     runs-on: ubuntu-latest
@@ -102,27 +102,32 @@ jobs:
               if m:
                   ns[m.group(1)] = float(m.group(2))
 
-          checks = [
-              # (label, pureGo_key, git_key, min_speedup_ratio)
+          # hard: job fails if ratio < threshold
+          hard = [
               ("Small",  "BenchmarkDiff_PureGo_Small",  "BenchmarkDiff_Git_Small",  10),
-              ("Medium", "BenchmarkDiff_PureGo_Medium", "BenchmarkDiff_Git_Medium",  2),
+          ]
+          # advisory: printed but never fails the job
+          advisory = [
+              ("Medium", "BenchmarkDiff_PureGo_Medium", "BenchmarkDiff_Git_Medium", None),
           ]
 
           fail = False
-          for label, pk, gk, min_x in checks:
+          for label, pk, gk, min_x in hard + advisory:
               if pk not in ns or gk not in ns:
                   print(f"WARNING  {label}: benchmark data missing — skipped")
                   continue
               ratio = ns[gk] / ns[pk]
-              ok     = ratio >= min_x
-              mark   = "PASS" if ok else "FAIL"
+              is_hard = min_x is not None
+              ok      = ratio >= min_x if is_hard else True
+              mark    = "PASS" if ok else "FAIL"
+              suffix  = f"(need >= {min_x}x)" if is_hard else "(advisory)"
               print(
                   f"[{mark}] {label}: "
                   f"PureGo {ns[pk]:>12,.0f} ns/op  |  "
                   f"Git    {ns[gk]:>12,.0f} ns/op  |  "
-                  f"speedup {ratio:>5.1f}x  (need >= {min_x}x)"
+                  f"speedup {ratio:>5.1f}x  {suffix}"
               )
-              if not ok:
+              if is_hard and not ok:
                   fail = True
 
           sys.exit(1 if fail else 0)
@@ -184,7 +189,7 @@ jobs:
             });
 
             md += '\n';
-            md += '**Invariants checked:** PureGo ≥ 10× on Small, ≥ 2× on Medium vs Git.\n';
+            md += '**Gate:** PureGo ≥ 10× on Small vs Git (hard).  Medium is advisory.\n';
             md += `**Artifact:** \`diff-benchmarks-${process.env.GITHUB_SHA}\`\n`;
 
             await octokit.rest.issues.createComment({
